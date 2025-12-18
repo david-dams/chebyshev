@@ -62,7 +62,44 @@ def generate_data():
             pos=np.asarray(pos, dtype=np.float64),
             moments=np.asarray(moments),
         )
+
+        
+# ffts boundary, returns 2D array with rows corresponding to abs, angle
+def fft(pos, cut = 10):
+    res = np.fft.fft(pos[:, 0] + 1j*pos[:, 1])
+    return np.stack([np.abs(res), np.angle(res)])[:, :cut]
+
+# annotates data with features : Nx2x10 shape dependent numbers
+def extract_features():
+    training_name = "training.npz"
+    features = []
+    moments = []
+    names = []
+    
+    for r in np.linspace(R_MIN, R_MAX, R_STEPS):
+        fname = f"{_safe_key(r)}.npz"
+        
+
+    
+        try:
+            data = np.load(fname)
+            features.append(fft(data["pos"]))
+            moments.append(data["moments"])
+            names.append(fname)            
+            
+        except FileNotFoundError:
+            pass
+        
+    np.savez_compressed(
+        training_name,
+        features = features,
+        moments = moments,
+        names = names        
+    )
+    
+    data = np.load(training_name)    
         
 if __name__ == '__main__':
     np.random.seed(0)
-    generate_data()    
+    # generate_data()
+    extract_features()
