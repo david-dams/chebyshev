@@ -2,10 +2,9 @@
 
 import jax
 import jax.numpy as jnp
-import optax
-import matplotlib.pyplot as plt
 from flax import linen as nn
-
+import optax
+import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -18,13 +17,13 @@ TRAINING_SET_PERCENTAGE = .9
 
 # TODO: no global
 rng = jax.random.PRNGKey(0)
-params_rng, w_rng, b_rng, samples_rng, noise_rng = jax.random.split(rng, num=5)
+params_rng, split_rng = jax.random.split(rng, num=2)
 
 def split_data(features, targets):
     data_size = targets.shape[0]
     n_training_samples = int(data_size * TRAINING_SET_PERCENTAGE)
 
-    permutation = jax.random.permutation(data_size)
+    permutation = jax.random.permutation(split_rng, data_size)
     training_idxs = permutation[:n_training_samples]
     validation_idxs = permutation[n_training_samples:]
     
@@ -113,7 +112,7 @@ def make_cost_func(model, features, targets, mean = True):
         return jax.vmap(squared_error)(features, targets)
     
     if mean == True:
-        return jnp.mean(jax.jit(sq_vec), axis = 0)
+        return jax.jit(lambda p : jnp.mean(sq_vec(p), axis = 0))
     
     return jax.jit(sq_vec)
 
@@ -167,6 +166,9 @@ def run_training_loop(model, params, features, targets, model_name):
 def validate(model, features, targets, model_name):
     params = load_model(model_name)    
     loss = make_cost_func(model, features, targets, mean = False)
-    
+
     plt.plot(loss(params))
     plt.savefig(f"loss_validation_{model_name}.pdf")
+
+if __name__ == '__main__':
+    run_linear_regression()
