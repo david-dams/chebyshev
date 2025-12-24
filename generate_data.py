@@ -1,5 +1,6 @@
 import kwant
 import numpy as np
+from numpy.fft import fft
 import itertools
 import shapely
 import matplotlib.pyplot as plt
@@ -103,5 +104,5 @@ def extract_features():
         
 if __name__ == '__main__':
     np.random.seed(0)
-    generate_data()
+    # generate_data()
     extract_features()
