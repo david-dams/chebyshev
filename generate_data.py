@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 R_MIN = 2
 R_MAX = 200
 R_STEPS = 500
-N_MIN = 3
-N_MAX = 12
+N_MIN = 12
+N_MAX = 40
 MAX_FEATURES = 100
 
 # just to check
@@ -57,8 +57,8 @@ def get_system(r : float, n : int):
 def _safe_key(r: float, n: int) -> str:
     return f"r_{r:.6f}_n_{n}".replace(".", "p")
 
-def get_grid():
-    corners = np.append(np.arange(N_MIN, N_MAX + 1), np.inf)
+def get_grid(n_min = N_MIN, n_max = N_MAX):
+    corners = np.append(np.arange(n_min, n_max + 1), np.inf)
     radii = np.linspace(R_MIN, R_MAX, R_STEPS)
     return itertools.product(radii, corners)
 
@@ -87,7 +87,7 @@ def extract_features():
     def pad(signal):
         return np.pad(signal, ((0, MAX_FEATURES - signal.shape[0]), (0,0)))
     
-    for r, n in get_grid():
+    for r, n in get_grid(3, 40):
         fname = f"{_safe_key(r, n)}.npz"
 
         try:
@@ -117,5 +117,5 @@ def extract_features():
         
 if __name__ == '__main__':
     np.random.seed(0)
-    # generate_data()
+    generate_data()
     extract_features()
