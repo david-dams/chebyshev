@@ -91,7 +91,7 @@ def extract_features():
             data = np.load(fname)
             trafo = fft(data["pos"])[:MAX_FEATURES]
             diff = MAX_FEATURES - trafo.shape[0]
-            trafo_padded = np.pad(trafo, (0, diff))            
+            trafo_padded = np.pad(trafo, ((0, diff), (0,0)))
             features.append(trafo_padded)
             moments.append(data["moments"])
             names.append(fname)            
