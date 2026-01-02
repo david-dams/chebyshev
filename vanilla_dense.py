@@ -114,6 +114,21 @@ class MLP(nn.Module):
         x = nn.Dense(features=self.n2, name = "dense2")(x)
         x = nn.sigmoid(x)
         return x
+
+class FusionMLP(nn.Module):
+    n1 : int
+    n2 : int
+
+    @nn.compact
+    def __call__(self, x):
+        xr = nn.Dense(features=self.n1, name = "denseRadius")(x[..., 0])
+        xa = nn.Dense(features=self.n1, name = "denseAngle")(x[..., 1])
+        x = jnp.concatenate([xr, xa])
+        x = nn.sigmoid(x)
+        x = nn.Dense(features=self.n2, name = "dense2")(x)
+        x = nn.sigmoid(x)
+        return x
+
     
 def make_mlp():
     data = get_data(concatenate = True)
@@ -130,7 +145,24 @@ def make_mlp():
     params = model.init(params_rng, jnp.ones((n_in,), dtype=jnp.float32))
     
     return model, params
+
+
+def make_fusion_mlp():
+    data = get_data()
+    features, targets = data["train"]
     
+    # predict array of shape n_samples x n_batch
+    n_out = targets.shape[-1]
+    n_in = features.shape[1]
+    n_hidden = n_out + n_in #n_out #int((n_out + n_in) * 2/3)
+
+    model = FusionMLP(n1 = n_hidden // 2, n2 = n_out)
+
+    # parameters
+    params = model.init(params_rng, jnp.ones((n_in, 2), dtype=jnp.float32))
+    
+    return model, params
+
 
 def make_cost_func(model, features, targets, mean = True):
     """cost function (mean squared error)
@@ -185,6 +217,18 @@ def run_mlp():
     features, targets = data["validation"]
     validate(model, features, targets, model_name)    
 
+def run_fusion_mlp():
+    model_name = "fusion_mlp"
+    
+    model, params = make_fusion_mlp()
+    data = get_data()
+    features, targets = data["train"]
+
+    run_training_loop(model, params, features, targets, model_name)    
+    plot_loss(model_name)
+
+    features, targets = data["validation"]
+    validate(model, features, targets, model_name)        
     
 def run_training_loop(model, params, features, targets, model_name):
     """trains model and saves params
@@ -225,11 +269,12 @@ def validate(model, features, targets, model_name):
     loss_vals = loss(params)
     plt.xlabel("structure size")
     plt.ylabel("Validation loss")
-    print(jnp.mean(loss_vals))
+    print(model_name, ": ", jnp.mean(loss_vals))
     plt.plot(np.arange(loss_vals.size), loss_vals)
     plt.savefig(f"loss_validation_{model_name}.pdf")
     plt.close()
 
 if __name__ == '__main__':
-    # run_linear_regression()
+    run_linear_regression()
     run_mlp()
+    run_fusion_mlp()
