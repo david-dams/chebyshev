@@ -55,7 +55,7 @@ def get_data(concatenate = False):
 
     # check if moments are sufficiently real
     targets = data["moments"]
-    assert_real(targets)    
+    assert_real(targets)
 
     return split_data(features.real, targets.real)
 
@@ -68,9 +68,16 @@ def plot_loss(name):
     plt.savefig(f"loss_{name}.pdf")
     plt.close()
 
+def sum_params_flat(x):
+    if isinstance(x, dict):
+        return sum(map(sum_params_flat, x.values()))
+    else:
+        return x.size
+    
 def load_model(name):
     with open(f"{PARAMS_DIR}params_{name}.pkl", "rb") as f:
         params = pickle.load(f)
+    print(f"loading {name} with {sum_params_flat(params)}")
     return params
 
 def save_model(params, name):
@@ -112,7 +119,6 @@ class MLP(nn.Module):
         x = nn.Dense(features=self.n1, name = "dense1")(x)
         x = nn.sigmoid(x)
         x = nn.Dense(features=self.n2, name = "dense2")(x)
-        x = nn.sigmoid(x)
         return x
 
 class FusionMLP(nn.Module):
@@ -121,12 +127,14 @@ class FusionMLP(nn.Module):
 
     @nn.compact
     def __call__(self, x):
-        xr = nn.Dense(features=self.n1, name = "denseRadius")(x[..., 0])
-        xa = nn.Dense(features=self.n1, name = "denseAngle")(x[..., 1])
-        x = jnp.concatenate([xr, xa])
+        abs_part   = x[:MAX_FEATURES, :]        
+        angle_part = x[MAX_FEATURES:, :]        
+
+        xr = nn.Dense(self.n1, name = "denseRadius"))(abs_part.reshape(-1)) 
+        xa = nn.Dense(self.n1, name = "denseAngle"))(angle_part.reshape(-1)) 
+        x  = jnp.concatenate([xr, xa], axis=-1)
         x = nn.sigmoid(x)
         x = nn.Dense(features=self.n2, name = "dense2")(x)
-        x = nn.sigmoid(x)
         return x
 
     
@@ -236,7 +244,7 @@ def run_training_loop(model, params, features, targets, model_name):
     
     loss = make_cost_func(model, features, targets)
 
-    # Creates a function that returns value and gradient of the loss.
+    # Creates a function that returns value and gradient of the loss. 
     loss_grad_fn = jax.value_and_grad(loss)
 
     tx = optax.chain(

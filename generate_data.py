@@ -14,7 +14,7 @@ MAX_FEATURES = 100
 
 # just to check
 def _plot_boundary(fsyst):
-    pos = boundary_positions(fsyst)
+    pos = get_boundary_positions(fsyst)
     plt.scatter(x = pos[:, 0], y =  pos[:, 1])
     ax = plt.gca()
     ax.set_aspect('equal', adjustable='box')
