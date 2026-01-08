@@ -39,8 +39,8 @@ def split_data(features, targets):
 
     ft, tt = features[training_idxs], targets[training_idxs]
     fv, tv= features[validation_idxs], targets[validation_idxs]
-    targets_mean, targets_sd = jnp.mean(tt), jnp.sd(tt)
-    features_mean, features_sd = jnp.mean(ft), jnp.sd(ft)
+    targets_mean, targets_sd = jnp.mean(tt), jnp.std(tt)
+    features_mean, features_sd = jnp.mean(ft), jnp.std(ft)
 
     
     data = {
