@@ -26,6 +26,9 @@ MAX_FEATURES = 100
 rng = jax.random.PRNGKey(0)
 params_rng, split_rng = jax.random.split(rng, num=2)
 
+def normalize(x, xm, xd):
+    return (x-xm)/xd
+
 def split_data(features, targets):
     data_size = targets.shape[0]
     n_training_samples = int(data_size * TRAINING_SET_PERCENTAGE)
@@ -33,10 +36,18 @@ def split_data(features, targets):
     permutation = jax.random.permutation(split_rng, data_size)
     training_idxs = permutation[:n_training_samples]
     validation_idxs = permutation[n_training_samples:]
+
+    ft, tt = features[training_idxs], targets[training_idxs]
+    fv, tv= features[validation_idxs], targets[validation_idxs]
+    targets_mean, targets_sd = jnp.mean(tt), jnp.sd(tt)
+    features_mean, features_sd = jnp.mean(ft), jnp.sd(ft)
+
     
     data = {
-        "train" : [features[training_idxs], targets[training_idxs]],
-        "validation" : [features[validation_idxs], targets[validation_idxs]],
+        "train" : [normalize(ft, features_mean, features_sd), normalize(tt, targets_mean, targets_sd)],
+        "targets_stats" : [targets_mean_train, targets_sd_train],
+        "features_stats" : [features_mean_train, features_sd_train],
+        "validation" : [fv, tv],
     }
     
     return data
