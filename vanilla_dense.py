@@ -449,3 +449,4 @@ if __name__ == '__main__':
 
     # exploit context
     run_cnn()
+    run_cnn_impr()
