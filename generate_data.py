@@ -1,6 +1,6 @@
 import kwant
 import numpy as np
-from numpy.fft import rfft
+from numpy.fft import fft
 import itertools
 import shapely
 import matplotlib.pyplot as plt
@@ -12,7 +12,7 @@ N_MIN = 12
 N_MAX = 40
 MAX_FEATURES = 100
 
-# just to check
+# visual tests
 def _plot_boundary(fsyst):
     pos = get_boundary_positions(fsyst)
     plt.scatter(x = pos[:, 0], y =  pos[:, 1])
@@ -22,6 +22,14 @@ def _plot_boundary(fsyst):
     # from shapely import plotting
     # plotting.plot_polygon(polygon)
     # kwant.plot(fsyst)
+
+def _plot_corner_order(pos):
+    plt.scatter(x = pos[:, 0], y =  pos[:, 1])
+    ax = plt.gca()
+    ax.set_aspect('equal', adjustable='box')
+    for i, p in enumerate(pos):
+        ax.annotate(f"{i}", p)
+    plt.show()    
 
 def get_shape_fun(r, n):
     if n == np.inf:
@@ -85,23 +93,39 @@ def extract_features():
     names = []
 
     def pad(signal):
-        return np.pad(signal, ((0, MAX_FEATURES - signal.shape[0]), (0,0)))
+        diff = MAX_FEATURES - signal.shape[0]
+        if diff > 0:
+            return np.pad(signal, (0, diff))
+        return signal[:MAX_FEATURES]
     
     for r, n in get_grid(3, 40):
         fname = f"{_safe_key(r, n)}.npz"
 
         try:
-            data = np.load(fname)
+            data = np.load(fname)        
 
-            # real fourier trafo (=> only positive freq compoents, including zero)
-            trafo = rfft(data["pos"], axis = 0)
-
-            # truncate and transform to two-column array: x, y [abs[0], ..., abs[N], angles[0], ..., angles[N]]
-            r = np.abs(trafo)[:MAX_FEATURES]
-            angle = np.angle(trafo)[:MAX_FEATURES]            
-            trafo_abs_angle = np.concatenate([pad(r), pad(angle)])
+            # circular order of positions
+            pos = data["pos"]
+            c = pos.mean(axis=0)
+            pos = pos -  c
+            # _plot_corner_order(pos)
+            ang = np.arctan2(pos[:,1], pos[:,0])
+            pos = pos[np.argsort(ang)]
+            # _plot_corner_order(pos)            
             
-            features.append(trafo_abs_angle)
+            # ft defined with 1/N as in https://pages.hmc.edu/ruye/e161/lectures/fd/node1.html vs https://numpy.org/doc/stable/reference/routines.fft.html#implementation-details        
+            enc = fft(pos[:, 0] + 1j*pos[:, 1], axis = 0) / pos.shape[0]
+            
+            # rotation invariance => take absolute value
+            r = np.abs(enc)
+
+            # position invariance => drop k = 0
+            r = r[1:]
+            
+            # if r.size > MAX_FEATURES => truncate, else: pad
+            r = pad(r)
+                        
+            features.append(r)
             moments.append(data["moments"])
             names.append(fname)            
             
@@ -116,6 +140,6 @@ def extract_features():
     )
         
 if __name__ == '__main__':
-    np.random.seed(0)
-    generate_data()
+    # np.random.seed(0)
+    # generate_data()
     extract_features()
