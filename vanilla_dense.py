@@ -273,6 +273,14 @@ def run_training_loop(model, params, features, targets, model_name):
     """trains model and saves params
     """
     
+    # scan JITs => speeds up training
+    def training_func(carry, loss):
+        params, opt_state = carry
+        loss_val, grads = loss_grad_fn(params)
+        updates, opt_state = tx.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
+        return params, loss_val
+    
     loss = make_cost_func(model, features, targets)
 
     # Creates a function that returns value and gradient of the loss. 
@@ -285,18 +293,12 @@ def run_training_loop(model, params, features, targets, model_name):
         optax.scale(-LEARNING_RATE)
     )
 
-    opt_state = tx.init(params)
-
-    # scan JITs => speeds up training
-    def training_func(params, loss):
-        loss_val, grads = loss_grad_fn(params)
-        updates, opt_state = tx.update(grads, opt_state)
-        params = optax.apply_updates(params, updates)
-        return params, loss_val
+    opt_state = tx.init(params)    
+    carry, loss_history = jax.lax.scan(training_func,
+                                       (params, opt_state),
+                                       length = NUM_STEPS)
+    params, opt_state = carry
     
-    params, loss_history = jax.lax.scan(training_func,
-                                        params,
-                                        length = NUM_STEPS)
     
     save_model(params, model_name)
     save_loss(loss_history, model_name)
