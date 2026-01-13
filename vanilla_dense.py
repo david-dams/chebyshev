@@ -262,16 +262,15 @@ def run_cnn():
     data = get_data()
     features, targets = data["train"]
 
-    run_training_loop(model, params, features, targets, model_name)    
+    # TODO: for whatever reason, JIT in scan is slower than plain Python (at least on CPU)
+    run_training_loop(model, params, features, targets, model_name, use_scan = False)    
     plot_loss(model_name)
 
     features, targets = data["validation"]
     validate(model, features, targets, model_name)        
 
-## GENERIC TRAINING ##    
-def run_training_loop(model, params, features, targets, model_name):
-    """trains model and saves params
-    """
+## GENERIC TRAINING ##
+def get_training_func(tx, loss_grad_fn):
     
     # scan JITs => speeds up training
     def training_func(carry, loss):
@@ -280,7 +279,13 @@ def run_training_loop(model, params, features, targets, model_name):
         updates, opt_state = tx.update(grads, opt_state)
         params = optax.apply_updates(params, updates)
         return (params, opt_state), loss_val
-    
+
+    return training_func
+
+def run_training_loop(model, params, features, targets, model_name, use_scan = True):
+    """trains model and saves params
+    """
+        
     loss = make_cost_func(model, features, targets)
 
     # Creates a function that returns value and gradient of the loss. 
@@ -293,13 +298,24 @@ def run_training_loop(model, params, features, targets, model_name):
         optax.scale(-LEARNING_RATE)
     )
 
-    opt_state = tx.init(params)    
-    carry, loss_history = jax.lax.scan(training_func,
-                                       (params, opt_state),
-                                       length = NUM_STEPS)
-    params, opt_state = carry
     
-    
+    opt_state = tx.init(params)
+
+    if use_scan == True:
+        f = get_training_func(tx, loss_grad_fn)
+        carry, loss_history = jax.lax.scan(f,
+                                           (params, opt_state),
+                                           length = NUM_STEPS)
+        params, _ = carry
+
+    else:
+        loss_history = []
+        for _ in range(NUM_STEPS):
+            loss_val, grads = loss_grad_fn(params)
+            loss_history.append(loss_val)
+            updates, opt_state = tx.update(grads, opt_state)
+            params = optax.apply_updates(params, updates)
+        
     save_model(params, model_name)
     save_loss(loss_history, model_name)
     
