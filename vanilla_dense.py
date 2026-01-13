@@ -215,15 +215,15 @@ def make_cost_func(model, features, targets, mean = True):
 
         # vectorization: F, T -> E, where dims: N x Nf, N x Nt -> N
         return jax.vmap(mse)(features, targets)
-
+    
+    # for validation: compute per sample
+    func = mse_vec
+    
     # for training: average over samples to produce scalar
     if mean == True:
-        return jax.jit(
-            lambda p : jnp.mean(mse_vec(p))
-        )
+        func = lambda p : jnp.mean(mse_vec(p))
 
-    # for validation: compute per sample
-    return jax.jit(mse_vec)
+    return jax.jit(func)
 
 ## TRAIN + VALIDATE ##
 def run_linear_regression():
@@ -286,6 +286,8 @@ def run_training_loop(model, params, features, targets, model_name):
 
     loss_history = []
 
+    # TODO: JIT
+    
     # Minimizes the loss.
     for _ in range(NUM_STEPS):
       # Computes gradient of the loss.
@@ -302,7 +304,7 @@ def run_training_loop(model, params, features, targets, model_name):
 ## GENERIC VALIDATION ##
 def validate(model, features, targets, model_name):
     params = load_model(model_name)        
-    loss = make_cost_func(model, features, targets)
+    loss = make_cost_func(model, features, targets, mean = False)
     loss_vals = loss(params)
     plt.xlabel("Structure size")
     plt.ylabel("Validation loss")
