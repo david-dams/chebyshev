@@ -62,7 +62,6 @@ def plot_predictions(name):
         ax.plot(energies, densities_pred.real, '--')
 
     plt.savefig(f"{name}.pdf")
-    # plt.show()
 
 def plot_predictions_2d(name):
     
@@ -70,7 +69,6 @@ def plot_predictions_2d(name):
 
     spectra_ref, spectra_pred = [], []
 
-    fig, ax = plt.subplots(1,1)
     for i, r in enumerate(radii):        
         fsyst = get_system(float(r), maybe_to_int(corners[i]))     
         spectrum = kwant.kpm.SpectralDensity(fsyst)
@@ -82,13 +80,25 @@ def plot_predictions_2d(name):
 
         spectra_ref.append(densities_ref)
         spectra_pred.append(densities_pred)
+        
+    fig, axs = plt.subplots(1, 2)
 
-    plt.matshow(densities_ref)        
-    plt.savefig(f"2d_{name}_ref.pdf")
+    im0 = axs[0].matshow(spectra_ref)
+    axs[0].set_xlabel(r"$E$")
+    axs[0].set_ylabel(r"$r (nm)$")
+    axs[0].set_aspect("equal")
+    fig.colorbar(im0, ax=axs[0])
 
-    plt.matshow(densities_pred)        
-    plt.savefig(f"2d_{name}_pred.pdf")
+    im1 = axs[1].matshow(spectra_pred)
+    axs[1].set_xlabel(r"$E$")
+    axs[1].set_ylabel(r"$r (nm)$")
+    axs[1].set_aspect("equal")
+    fig.colorbar(im1, ax=axs[1])
 
+    plt.tight_layout()
+
+
+    plt.savefig(f"2d_{name}.pdf")
     
 if __name__ == "__main__":
     # plot_predictions("cnn")    
