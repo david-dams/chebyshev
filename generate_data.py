@@ -40,10 +40,10 @@ def get_shape_fun(r, n):
     polygon = shapely.Polygon(coords)
     return lambda pos : polygon.contains(shapely.Point(pos))
 
-def get_moments(fsyst):
+def get_moments_limits(fsyst):
     spectrum = kwant.kpm.SpectralDensity(fsyst)
     moments = spectrum._moments()    
-    return moments
+    return moments, spectrum._a, spectrum._b
 
 def get_boundary_positions(fsyst):
     return np.array(
@@ -82,7 +82,7 @@ def generate_data():
 
         pos = get_boundary_positions(fsyst)        
         print(f"System with {fsyst.graph.num_nodes} atoms and r, n = {r, n}.")        
-        moments = get_moments(fsyst)
+        moments, a, b = get_moments_limits(fsyst)
 
         fname = f"{safe_key(r, n)}.npz"
         np.savez_compressed(
@@ -90,6 +90,8 @@ def generate_data():
             r=np.array(r),
             pos=np.asarray(pos, dtype=np.float64),
             moments=np.asarray(moments),
+            a = a,
+            b = b
         )
 
 def extract_features():
@@ -99,6 +101,8 @@ def extract_features():
     names = []
     radii = []
     corners = []
+    lower_limits = []
+    upper_limits = []
 
     def pad(signal):
         diff = MAX_FEATURES - signal.shape[0]
@@ -138,6 +142,8 @@ def extract_features():
             names.append(fname)
             radii.append(radius)
             corners.append(n)
+            lower_limits.append(data["a"])
+            upper_limits.append(data["b"])
             
         except FileNotFoundError:
             pass
@@ -148,10 +154,12 @@ def extract_features():
         moments = moments,
         names = names,
         radii = radii,
-        corners = corners
+        corners = corners,
+        lower_limits = lower_limits,
+        upper_limits = upper_limits 
     )
         
 if __name__ == '__main__':
     # np.random.seed(0)
-    # generate_data()
+    generate_data()
     extract_features()
