@@ -62,8 +62,14 @@ def get_system(r : float, n : int):
 
     return fsyst
 
-def _safe_key(r: float, n: int) -> str:
+def safe_key(r: float, n: int) -> str:
     return f"r_{r:.6f}_n_{n}".replace(".", "p")
+
+def get_radius_n_from_safe_key(k : str) -> str:
+    _, r, _, n = k.split("_")
+    r = float(r.replace("p", "."))
+    n = int(n.split("p")[0])    
+    return r, n
 
 def get_grid(n_min = N_MIN, n_max = N_MAX):
     corners = np.append(np.arange(n_min, n_max + 1), np.inf)
@@ -78,7 +84,7 @@ def generate_data():
         print(f"System with {fsyst.graph.num_nodes} atoms and r, n = {r, n}.")        
         moments = get_moments(fsyst)
 
-        fname = f"{_safe_key(r, n)}.npz"
+        fname = f"{safe_key(r, n)}.npz"
         np.savez_compressed(
             fname,
             r=np.array(r),
@@ -91,6 +97,8 @@ def extract_features():
     features = []
     moments = []
     names = []
+    radii = []
+    corners = []
 
     def pad(signal):
         diff = MAX_FEATURES - signal.shape[0]
@@ -99,7 +107,7 @@ def extract_features():
         return signal[:MAX_FEATURES]
     
     for r, n in get_grid(3, 40):
-        fname = f"{_safe_key(r, n)}.npz"
+        fname = f"{safe_key(r, n)}.npz"
 
         try:
             data = np.load(fname)        
@@ -127,7 +135,9 @@ def extract_features():
                         
             features.append(r)
             moments.append(data["moments"])
-            names.append(fname)            
+            names.append(fname)
+            radii.append(r)
+            corners.append(n)
             
         except FileNotFoundError:
             pass
@@ -136,7 +146,9 @@ def extract_features():
         training_name,
         features = features,
         moments = moments,
-        names = names        
+        names = names,
+        radii = radii,
+        corners = corners
     )
         
 if __name__ == '__main__':
