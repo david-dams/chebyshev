@@ -60,6 +60,8 @@ class Conv(nn.Module):
         x = nn.Dense(features=self.n_out, name='dense1')(x)
 
         return x[0]
+
+MODELS = {"cnn" : make_cnn, "mlp" : make_mlp, "linear" : make_linear_regression}
     
 ## DATA PREPARATION ##
 def normalize(x, xm, xd):
@@ -68,10 +70,12 @@ def normalize(x, xm, xd):
 def denormalize(x, xm, xd):
     return x*(xd + 1e-8) + xm
 
-def split_data(features, targets):
+def split_data(features, targets, radii, corners):
     """split data randomly into training and validation set, returning dictionary with keys: train, validation and stats (mean, sd) of features and targets in training set to be used for inference"""
     features = jnp.array(features)
     targets = jnp.array(targets)
+    radii = jnp.array(radii)
+    corners = jnp.array(corners)
     
     data_size = targets.shape[0]
     n_training_samples = int(data_size * TRAINING_SET_PERCENTAGE)
@@ -88,6 +92,10 @@ def split_data(features, targets):
     data = {
         "train" : [normalize(ft, features_mean, features_sd), normalize(tt, targets_mean, targets_sd)],
         "validation" : [normalize(fv, features_mean, features_sd), normalize(tv, targets_mean, targets_sd)],
+        "radii_validation" : radii[validation_idxs],
+        "corners_validation" : corners[validation_idxs],
+        "radii_training" : radii[training_idxs],
+        "corners_training" : corners[training_idxs],
         "targets_stats" : [targets_mean, targets_sd],
         "features_stats" : [features_mean, features_sd],
     }
@@ -108,7 +116,7 @@ def get_data():
     targets = data["moments"]
     assert_real(targets)
 
-    return split_data(features.real, targets.real)
+    return split_data(features.real, targets.real, data["radii"], data["corners"])
 
 ## VISUALIZATION ##
 def plot_loss(name):
@@ -193,20 +201,6 @@ def make_cnn():
     
     return model, params
 
-def make_cnn_impr():
-    data = get_data()
-    
-    features, targets = data["train"]
-    n_out = targets.shape[-1]
-    n_in = features.shape[1]
-    
-    model = ConvImproved(n_out = n_out)    
-
-    # parameters
-    params = model.init(params_rng, jnp.ones((n_in,), dtype=jnp.float32))
-    
-    return model, params
-
 
 ## LOSS FUNCTION ##
 def make_cost_func(model, features, targets, mean = True):
@@ -282,19 +276,6 @@ def run_cnn():
     validate(model, data, model_name)        
 
 
-def run_cnn_impr():
-    model_name = "cnn_impr"
-    
-    model, params = make_cnn_impr()
-    data = get_data()
-    features, targets = data["train"]
-
-    # TODO: for whatever reason, JIT in scan is slower than plain Python (at least on CPU)
-    run_training_loop(model, params, features, targets, model_name, use_scan = False)    
-    plot_loss(model_name)
-
-    validate(model, data, model_name)        
-
 ## GENERIC TRAINING ##
 def get_training_func(tx, loss_grad_fn):
     
@@ -346,21 +327,6 @@ def run_training_loop(model, params, features, targets, model_name, use_scan = T
     save_loss(loss_history, model_name)
     
 ## GENERIC VALIDATION ##
-def predict(model, data):
-
-    x_std, y_std = data["validation"]
-    x_mean, x_sigma = data["features_stats"]
-
-    # unstandardized error
-    y_mean, y_sigma = data["targets_stats"]
-    y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std)
-    
-    # denormalize
-    y_pred = denormalize(y_pred, y_mean, y_sigma)
-    y = denormalize(y_std, y_mean, y_sigma)
-
-    return
-
 def r_squared(y, y_pred):
     """R^2 per chebyshev coefficient"""
     ss_res =  ((y-y_pred)**2).mean(axis = 0)
@@ -403,7 +369,27 @@ def validate(model, data, model_name):
     plt.plot(x.sum(axis = 1), loss_vals)
     plt.savefig(f"loss_validation_{model_name}.pdf")
     plt.close()
- 
+
+    save_predictions(model_name, data)
+
+def save_predictions(name, data):
+    model, _ = MODELS[name]()
+    params = load_model(name)
+
+    x_std, y_std = data["validation"]
+    y_mean, y_sigma = data["targets_stats"]
+    y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std)
+    y_pred = denormalize(y_pred, y_mean, y_sigma)
+    y = denormalize(y_std, y_mean, y_sigma)
+
+    np.savez_compressed(
+        f"{name}_predictions.npz",
+        y = y,
+        y_pred = y_pred,
+        radii = data["radii_validation"],
+        corners = data["corners_validation"]
+    )
+    
 if __name__ == '__main__':
     # # simple baseline to test against
     run_linear_regression()
