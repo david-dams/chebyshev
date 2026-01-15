@@ -24,17 +24,36 @@ MAX_FEATURES = 100
 rng = jax.random.PRNGKey(0)
 params_rng, split_rng = jax.random.split(rng, num=2)
 
+# model names
+CNN = "cnn"
+MLP = "mlp"
+LINEAR_REGRESSION = "linear_regression"
+
 ## MODELS ##
+class Linear(nn.Module):
+    n_out : int
+
+    @nn.compact
+    def __call__(self, x):
+        
+        mu = nn.Dense(features=self.n_out, name = "chebyshev")(x)
+        ab = nn.Dense(features=2, name = "energy")(x)
+        
+        return {"mu" : mu, "ab" : ab}
+
 class MLP(nn.Module):
     n1 : int
     n2 : int
 
     @nn.compact
     def __call__(self, x):
-        x = nn.Dense(features=self.n1, name = "dense1")(x)
-        x = nn.gelu(x)
-        x = nn.Dense(features=self.n2, name = "dense2")(x)
-        return x
+        h = nn.Dense(features=self.n1, name = "dense1")(x)
+        h = nn.gelu(h)
+        
+        mu = nn.Dense(features=self.n2, name = "dense_chebyshev")(h)
+        ab = nn.Dense(features=2, name = "dense_energy")(h)
+        
+        return {"mu" : mu, "ab" : ab}
 
 class Conv(nn.Module):
     n_out : int
@@ -57,9 +76,12 @@ class Conv(nn.Module):
         x = x.mean(axis = 1)
 
         # small mlp head
-        x = nn.Dense(features=self.n_out, name='dense1')(x)
+        mu = nn.Dense(features=self.n_out, name='dense_chebyshev')(x)
 
-        return x[0]
+        # energy limit head
+        ab = nn.Dense(features=2, name='dense_energy')(x)
+
+        return {"mu" : mu[0], "ab" : ab[0]}
     
 ## DATA PREPARATION ##
 def normalize(x, xm, xd):
@@ -68,12 +90,29 @@ def normalize(x, xm, xd):
 def denormalize(x, xm, xd):
     return x*(xd + 1e-8) + xm
 
-def split_data(features, targets, radii, corners):
+def get_features_targets(data):
+    return { "fourier" : data["fourier"] }, { "mu" : data["mu"], "ab" : data["ab"] }
+
+def split_data(features, targets, radii, corners, lower_limits, upper_limits):
     """split data randomly into training and validation set, returning dictionary with keys: train, validation and stats (mean, sd) of features and targets in training set to be used for inference"""
-    features = jnp.array(features)
-    targets = jnp.array(targets)
+    def _get_stats(arr, idxs):
+        return jnp.mean(arr[idxs], axis = 0), jnp.std(arr[idxs], axis = 0)
+    
+    def _get_data_dict(idxs):
+        return {
+            "fourier": normalize(fourier[idxs], fourier_mean, fourier_sd),
+            "mu" : normalize(mu[idxs], mu_mean, mu_sd),
+            "ab" : jnp.stack([lower_limits[idxs], upper_limits[idxs]], axis = 1),
+            "radii" : radii[idxs],
+            "corners" : corners[idxs]
+        }
+    
+    fourier = jnp.array(features)
+    mu = jnp.array(targets)
     radii = jnp.array(radii)
     corners = jnp.array(corners)
+    lower_limits = jnp.array(lower_limits)
+    upper_limits = jnp.array(upper_limits)
     
     data_size = targets.shape[0]
     n_training_samples = int(data_size * TRAINING_SET_PERCENTAGE)
@@ -82,20 +121,16 @@ def split_data(features, targets, radii, corners):
     training_idxs = permutation[:n_training_samples]
     validation_idxs = permutation[n_training_samples:]
 
-    ft, tt = features[training_idxs], targets[training_idxs]
-    fv, tv = features[validation_idxs], targets[validation_idxs]
-    targets_mean, targets_sd = jnp.mean(tt, axis = 0), jnp.std(tt, axis = 0)
-    features_mean, features_sd = jnp.mean(ft, axis = 0), jnp.std(ft, axis = 0)    
+    fourier_mean, fourier_sd = _get_stats(fourier, training_idxs)
+    mu_mean, mu_sd = _get_stats(mu, training_idxs)
 
     data = {
-        "train" : [normalize(ft, features_mean, features_sd), normalize(tt, targets_mean, targets_sd)],
-        "validation" : [normalize(fv, features_mean, features_sd), normalize(tv, targets_mean, targets_sd)],
-        "radii_validation" : radii[validation_idxs],
-        "corners_validation" : corners[validation_idxs],
-        "radii_training" : radii[training_idxs],
-        "corners_training" : corners[training_idxs],
-        "targets_stats" : [targets_mean, targets_sd],
-        "features_stats" : [features_mean, features_sd],
+        "train" : _get_data_dict(training_idxs),
+        "validation" : _get_data_dict(validation_idxs), 
+        "mu_mean" : mu_mean,
+        "mu_sd" : mu_sd,
+        "fourier_mean" : fourier_mean,
+        "fourier_sd" : fourier_sd
     }
     
     return data
@@ -113,8 +148,16 @@ def get_data():
     # check if moments are sufficiently real
     targets = data["moments"]
     assert_real(targets)
+    
+    # TODO: this is for debug, remove on real data
+    if "lower_limits" in data:
+        lower_limits = data["lower_limits"]
+        upper_limits = data["upper_limits"]
+    else: 
+        lower_limits = jnp.arange(features.shape[0]) + 10
+        upper_limits = jnp.arange(features.shape[0]) + 10
 
-    return split_data(features.real, targets.real, data["radii"], data["corners"])
+    return split_data(features.real, targets.real, data["radii"], data["corners"], lower_limits, upper_limits)
 
 ## VISUALIZATION ##
 def plot_loss(name):
@@ -159,22 +202,22 @@ def make_linear_regression():
     where c are chebyshev coefficients, M, b are learnable weights and biases and x represents shape via fourier descriptor (absolute values, shape is centered to ensure rotational invariance)   
     """
     data = get_data()
-    features, targets = data["train"]
+    features, targets = get_features_targets(data["train"])
     
     # predict array of shape n_samples x n_batch
-    model = nn.Dense(features=targets.shape[-1])
+    model = Linear(targets["mu"].shape[-1])
 
     # parameters
-    params = model.init(params_rng, jnp.ones((features.shape[-1],), dtype=jnp.float32))
+    params = model.init(params_rng, jnp.ones((features["fourier"].shape[-1],), dtype=jnp.float32))
     
     return model, params
     
 def make_mlp():
     data = get_data()
-    features, targets = data["train"]
+    features, targets = get_features_targets(data["train"])
     
     # predict array of shape n_samples x n_batch
-    n_out = targets.shape[-1]
+    n_out = targets["mu"].shape[-1]
     n_in = features.shape[-1]
     n_hidden = n_out + n_in #n_out #int((n_out + n_in) * 2/3)
 
@@ -188,8 +231,8 @@ def make_mlp():
 def make_cnn():
     data = get_data()
     
-    features, targets = data["train"]
-    n_out = targets.shape[-1]
+    features, targets = get_features_targets(data["train"])
+    n_out = targets["mu"].shape[-1]
     n_in = features.shape[1]
     
     model = Conv(n_out = n_out)    
@@ -199,10 +242,10 @@ def make_cnn():
     
     return model, params
 
-MODELS = {"cnn" : make_cnn, "mlp" : make_mlp, "linear_regression" : make_linear_regression}
+MODELS = {CNN : make_cnn, MLP : make_mlp, LINEAR_REGRESSION : make_linear_regression}
 
 ## LOSS FUNCTION ##
-def make_cost_func(model, features, targets, mean = True):
+def make_cost_func(model, features, targets, l = 1.0, mean = True):
     """cost function (mean squared error)
 
     model :
@@ -216,13 +259,15 @@ def make_cost_func(model, features, targets, mean = True):
         def mse(x, y):
             """mean squared error over model dimensions
             
-            x: fourier shape descriptors of dim Nf
-            y: chebyshev coefficients of dim Nt
+            x: feature dict
+            y: targets dict
 
             returns scalar: jnp.mean((y-y_pred)**2)
             """
             pred = model.apply(params, x)
-            return jnp.mean((y-pred)**2)
+            err_fourier = jnp.mean((y["fourier"]-pred["fourier"])**2)
+            err_ab = jnp.mean((y["ab"]-pred["ab"])**2)                                   
+            return err_fourier + l * err_ab
 
         # vectorization: F, T -> E, where dims: N x Nf, N x Nt -> N
         return jax.vmap(mse)(features, targets)
@@ -233,47 +278,20 @@ def make_cost_func(model, features, targets, mean = True):
     # for training: average over samples to produce scalar
     if mean == True:
         func = lambda p : jnp.mean(mse_vec(p))
-
+        
     return jax.jit(func)
 
 ## TRAIN + VALIDATE ##
-def run_linear_regression():
-    model_name = "linear_regression"
-    
-    model, params = make_linear_regression()
+def run_model(model_name, use_scan = True):    
+    model, params = MODELS[model_name]()
     data = get_data()
-    features, targets = data["train"]
+    features, targets = get_features_targets(data["train"])
 
-    run_training_loop(model, params, features, targets, model_name)    
+    # TODO: for whatever reason, JIT in scan is slower for cnn than plain Python (at least on CPU)
+    run_training_loop(model, params, features, targets, model_name, use_scan = use_scan)    
     plot_loss(model_name)
 
-    validate(model, data, model_name)    
-
-def run_mlp():
-    model_name = "mlp"
-    
-    model, params = make_mlp()
-    data = get_data()
-    features, targets = data["train"]
-
-    run_training_loop(model, params, features, targets, model_name)    
-    plot_loss(model_name)
-
-    validate(model, data, model_name)    
-
-def run_cnn():
-    model_name = "cnn"
-    
-    model, params = make_cnn()
-    data = get_data()
-    features, targets = data["train"]
-
-    # TODO: for whatever reason, JIT in scan is slower than plain Python (at least on CPU)
-    run_training_loop(model, params, features, targets, model_name, use_scan = False)    
-    plot_loss(model_name)
-
-    validate(model, data, model_name)        
-
+    validate(model, data, model_name)
 
 ## GENERIC TRAINING ##
 def get_training_func(tx, loss_grad_fn):
@@ -333,8 +351,8 @@ def r_squared(y, y_pred):
     return 1 - ss_res / ss_tot
 
 def validate(model, data, model_name):
-    x_std, y_std = data["validation"]
-    x_mean, x_sigma = data["features_stats"]
+    x_std, y_std = get_features_targets(data["validation"])
+    x_mean, x_sigma = data["fourier_mean"], data["fourier_sd"]
     x = denormalize(x_std, x_mean, x_sigma)
     
     # standardized error
@@ -349,7 +367,7 @@ def validate(model, data, model_name):
     plt.close()
 
     # unstandardized error
-    y_mean, y_sigma = data["targets_stats"]
+    y_mean, y_sigma = data["mu_mean"], data["mu_sd"]
     y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std)
     
     # denormalize
@@ -375,8 +393,8 @@ def save_predictions(name, data):
     model, _ = MODELS[name]()
     params = load_model(name)
 
-    x_std, y_std = data["validation"]
-    y_mean, y_sigma = data["targets_stats"]
+    x_std, y_std = get_features_targets(data["validation"])
+    y_mean, y_sigma = data["fourier_mean"], data["fourier_sd"]
     y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std)
     y_pred = denormalize(y_pred, y_mean, y_sigma)
     y = denormalize(y_std, y_mean, y_sigma)
@@ -390,11 +408,11 @@ def save_predictions(name, data):
     )
     
 if __name__ == '__main__':
-    # # simple baseline to test against
-    run_linear_regression()
+    # simple baseline to test against
+    run_model(LINEAR_REGRESSION)
 
-    # # small fcn
-    run_mlp()
+    # small fcn
+    run_model(MLP)
 
-    # # exploit context
-    run_cnn()
+    # exploit context
+    run_model(CNN, use_scan = False)
