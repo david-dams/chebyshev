@@ -360,8 +360,8 @@ def mse(model, params, data, normalize):
         y_pred_mu = denormalize(y_pred["mu"], y_mean, y_sigma)
         y_mu = denormalize(y["mu"], y_mean, y_sigma)
         
-    err_mu = jnp.mean((y_mu-pred_mu)**2)
-    err_ab = jnp.mean((y_ab-pred_ab)**2)                                   
+    err_mu = jnp.mean((y_mu-y_pred_mu)**2)
+    err_ab = jnp.mean((y_ab-y_pred_ab)**2)                                   
         
     return {"mu" : err_mu, "ab" : err_ab}
 
