@@ -348,7 +348,7 @@ def r_squared(y, y_pred):
 
 def mse(model, params, data, normalize):
     x, y = get_features_targets(data["validation"])
-    y_pred = jax.vmap(lambda x : model.apply(params, x))(x)
+    y_pred = jax.vmap(lambda x : model.apply(params, x))(x["fourier"])
 
     y_pred_mu = y_pred["mu"]
     y_pred_ab = y_pred["ab"]    
@@ -399,7 +399,7 @@ def save_predictions(name, data):
 
     x_std, y_std = get_features_targets(data["validation"])
     y_mean, y_sigma = data["fourier_mean"], data["fourier_sd"]
-    y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std)
+    y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std["fourier"])
     y_pred = denormalize(y_pred, y_mean, y_sigma)
     y = denormalize(y_std, y_mean, y_sigma)
 
