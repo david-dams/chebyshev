@@ -26,7 +26,7 @@ params_rng, split_rng = jax.random.split(rng, num=2)
 
 # model names
 CNN = "cnn"
-MLP = "mlp"
+VANILLA = "mlp"
 LINEAR_REGRESSION = "linear_regression"
 
 ## MODELS ##
@@ -242,7 +242,7 @@ def make_cnn():
     
     return model, params
 
-MODELS = {CNN : make_cnn, MLP : make_mlp, LINEAR_REGRESSION : make_linear_regression}
+MODELS = {CNN : make_cnn, VANILLA : make_mlp, LINEAR_REGRESSION : make_linear_regression}
 
 ## LOSS FUNCTION ##
 def make_cost_func(model, features, targets, l = 1.0):
@@ -420,7 +420,7 @@ if __name__ == '__main__':
     run_model(LINEAR_REGRESSION)
 
     # small fcn
-    run_model(MLP)
+    run_model(VANILLA)
 
     # exploit context
     run_model(CNN, use_scan = False)
