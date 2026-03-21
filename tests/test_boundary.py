@@ -13,8 +13,6 @@ def test_boundary_graphene():
     fsyst = syst.finalized()
 
     pos = np.array([site.pos for site in fsyst.sites])
-    dist = np.linalg.norm(pos - pos[:, None], axis = -1)
-    pos - pos[None,:]
     dist = np.linalg.norm(pos - pos[:, None], axis = -1).round(3)
     nn = np.unique(dist)[1]
 

@@ -6,6 +6,8 @@ from numpy.fft import fft
 import shapely
 import matplotlib.pyplot as plt
 
+from chebyshev.utils import boundary_points_by_angular_gap
+
 from train import TRAINING_DATA
 
 R_MIN = 2
@@ -56,9 +58,8 @@ def get_grid():
     return itertools.product(radii, corners)
 
 def get_boundary_positions(fsyst):
-    return np.array(
-        [fsyst.pos(i) for i in range(fsyst.graph.num_nodes) if len(fsyst.graph.out_neighbors(i)) == 2]
-    )
+    pos = np.array([fsyst.pos(i) for i in range(fsyst.graph.num_nodes)])
+    return boundary_points_by_angular_gap(pos)
 
 def get_moments_limits(fsyst):
     spectrum = kwant.kpm.SpectralDensity(fsyst)
