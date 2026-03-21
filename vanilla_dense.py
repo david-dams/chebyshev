@@ -20,6 +20,7 @@ LEARNING_RATE = 1e-2
 NUM_STEPS = 500
 TRAINING_SET_PERCENTAGE = .8
 
+MAX_FEATURES = 100
 
 # TODO: no global
 rng = jax.random.PRNGKey(0)
