@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pickle
 from dataclasses import dataclass
 
@@ -10,10 +11,10 @@ import optax
 import matplotlib.pyplot as plt
 
 
-TRAINING_DATA = "training.npz"
-PARAMS_DIR = "params/"
-PLOT_DIR = "plots/"
-PREDICTIONS_DIR = "predictions/"
+TRAINING_DATA = Path(__file__).parent.parent / "data" / "training.npz"
+PARAMS_DIR = Path(__file__).parent.parent / "data" / "params/"
+PLOT_DIR = Path(__file__).parent.parent / "data" / "plots/"
+PREDICTIONS_DIR = Path(__file__).parent.parent / "data" / "predictions/"
 
 os.makedirs(PARAMS_DIR, exist_ok=True)
 os.makedirs(PLOT_DIR, exist_ok=True)
@@ -23,7 +24,7 @@ LEARNING_RATE = 1e-2
 NUM_STEPS = 500
 TRAINING_SET_PERCENTAGE = 0.8
 
-HOLDOUT_RADIUS_RANGE = (20.0, 40.0)   
+HOLDOUT_RADIUS_RANGE = (40.0, 60.0)   
 HOLDOUT_MODE = "radius_interval"  # "random"
 BATCH_SIZE = 128
 SHUFFLE_EACH_EPOCH = True

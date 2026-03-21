@@ -2,8 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from numpy.polynomial.chebyshev import chebval
 
-from train_new import PLOT_DIR, PREDICTIONS_DIR
-USE_PRED_AB = False
+from train import PLOT_DIR, PREDICTIONS_DIR
+USE_PRED_AB = True
 
 def reconstruct_spectrum(energy, moments, a, b):
     """
@@ -39,7 +39,7 @@ def reconstruct_spectrum(energy, moments, a, b):
     return rho
 
 
-def get_predictions(name, n_samples=None, seed=0):
+def get_predictions(name, n_samples=None, seed=42):
     data = np.load(f"{PREDICTIONS_DIR}/{name}.npz")
 
     y_mu = data["y_mu"]
@@ -49,6 +49,9 @@ def get_predictions(name, n_samples=None, seed=0):
     radii = data["radii"]
     corners = data["corners"]
 
+    y_pred_mu /= y_pred_mu.max()
+    y_mu /= y_mu.max()
+    
     if n_samples is not None:
         rng = np.random.default_rng(seed)
         n_samples = min(n_samples, y_mu.shape[0])

@@ -6,6 +6,8 @@ from numpy.fft import fft
 import shapely
 import matplotlib.pyplot as plt
 
+from train import TRAINING_DATA
+
 R_MIN = 2
 R_MAX = 200
 R_STEPS = 500
@@ -13,19 +15,15 @@ N_MIN = 3
 N_MAX = 40
 MAX_FEATURES = 100
 
-COEFFICIENTS_PATH="coefficients"
-REGENERATE_DATA=False
+COEFFICIENTS_PATH=Path(__file__).parent.parent / "data" /"coefficients"
+W90_FILES_DIR=Path(__file__).parent.parent / "data" /"wannier"
 
-# visual tests
 def _plot_boundary(fsyst):
     pos = get_boundary_positions(fsyst)
     plt.scatter(x = pos[:, 0], y =  pos[:, 1])
     ax = plt.gca()
     ax.set_aspect('equal', adjustable='box')
     plt.show()
-    # from shapely import plotting
-    # plotting.plot_polygon(polygon)
-    # kwant.plot(fsyst)
 
 def _plot_corner_order(pos):
     plt.scatter(x = pos[:, 0], y =  pos[:, 1])
@@ -44,65 +42,67 @@ def get_shape_fun(r, n):
     polygon = shapely.Polygon(coords)
     return lambda pos : polygon.contains(shapely.Point(pos))
 
-def get_moments_limits(fsyst):
-    spectrum = kwant.kpm.SpectralDensity(fsyst)
-    moments = spectrum._moments()    
-    return moments, spectrum._a, spectrum._b
+def radius_n_from_coefficients_file(fname):
+    radius = float(fname.split(".")[0].split("_")[2].replace("p", "."))
+    n = float(fname.split(".")[0].split("_")[4].split('p')[0])
+    return radius, n
+        
+def coefficients_file(r: float, n: int, model_id : str) -> str:
+    return f"{COEFFICIENTS_PATH}/{model_id}_r_{r:.6f}_n_{n}".replace(".", "p")
+
+def get_grid():
+    corners = np.append(np.arange(N_MIN, N_MAX + 1), np.inf)
+    radii = np.linspace(R_MIN, R_MAX, R_STEPS)
+    return itertools.product(radii, corners)
 
 def get_boundary_positions(fsyst):
     return np.array(
         [fsyst.pos(i) for i in range(fsyst.graph.num_nodes) if len(fsyst.graph.out_neighbors(i)) == 2]
     )
 
-def get_system(r : float, n : int):
-    syst = kwant.Builder()
-    lat = kwant.lattice.honeycomb(1, norbs=1)
+def get_moments_limits(fsyst):
+    spectrum = kwant.kpm.SpectralDensity(fsyst)
+    moments = spectrum._moments()    
+    return moments, spectrum._a, spectrum._b
 
-    syst[lat.shape(get_shape_fun(r, n), (0, 0))] = 0.
-    syst[lat.neighbors()] = 1.
-    syst.eradicate_dangling()
-
-    fsyst = syst.finalized()
-
-    return fsyst
-
-def coefficients_file(r: float, n: int) -> str:
-    return f"{COEFFICIENTS_PATH}/r_{r:.6f}_n_{n}".replace(".", "p")
-
-def get_grid(n_min = N_MIN, n_max = N_MAX):
-    corners = np.append(np.arange(n_min, n_max + 1), np.inf)
-    radii = np.linspace(R_MIN, R_MAX, R_STEPS)
-    return itertools.product(radii, corners)
+def get_systems():
+    for w90_path in os.listdir(W90_FILES_DIR):
+        parsed = Wannier90ToKwant(
+            wout_path=w90_path / "wannier90.wout",
+            hr_path=w90_path / "wannier90_hr.dat",
+            n=2,
+            rel_cutoff=1e-3,
+        )
+        for r, n in get_grid():
+            shape_fun = get_shape_fun(r, n)
+            fsyst = parsed.to_kwant_system(shape_fun)            
+            yield coefficients_file(r, n, w90_path), fsyst
+            
+    # phenom tb for graphene
+    # syst = kwant.Builder()
+    # lat = kwant.lattice.honeycomb(1, norbs=1)
+    # for r, n in get_grid():
+    #     shape_fun = get_shape_fun(r, n)
+    #     syst[lat.shape(shape_fun, (0, 0))] = 0.
+    #     syst[lat.neighbors()] = 1.
+    #     syst.eradicate_dangling()
+    #     fsyst = syst.finalized()            
+    #     yield coefficients_file(r, n, "graphene-1eV"), fsyst
 
 def generate_data():
-    for r, n in get_grid():
-        fname = f"{coefficients_file(r, n)}.npz"
-        if not REGENERATE_DATA and fname.split("/")[1] in os.listdir(COEFFICIENTS_PATH):
-            continue            
-        
-        fsyst = get_system(r, n)
-        
-        pos = get_boundary_positions(fsyst)        
-        print(f"System with {fsyst.graph.num_nodes} atoms and r, n = {r, n}.")        
-        moments, a, b = get_moments_limits(fsyst)
-
-
+    for fname, fsyst in get_systems():
+        pos = get_boundary_positions(fsyst)
+        moments, a, b = get_moments_limits(fsyst)        
+        print(f"Generated {fname}")
         np.savez_compressed(
             fname,
-            r=np.array(r),
             pos=np.asarray(pos, dtype=np.float64),
             moments=np.asarray(moments),
             a = a,
             b = b
         )
 
-def radius_n_from_coefficients_file(fname):
-    radius = float(fname.split(".")[0].split("_")[1].replace("p", "."))
-    n = float(fname.split(".")[0].split("_")[3].split('p')[0])
-    return radius, n
-
 def extract_features():
-    training_name = "training.npz"
     features = []
     moments = []
     names = []
@@ -152,14 +152,15 @@ def extract_features():
         upper_limits.append(data["b"])
                     
     np.savez_compressed(
-        training_name,
+        TRAINING_DATA,
         features = features,
         moments = moments,
         names = names,
         radii = radii,
         corners = corners,
         lower_limits = lower_limits,
-        upper_limits = upper_limits 
+        upper_limits = upper_limits,
+        model = fname.split("_")[0]
     )
         
 if __name__ == '__main__':
