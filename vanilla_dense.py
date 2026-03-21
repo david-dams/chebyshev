@@ -1,5 +1,3 @@
-# TODO: improved handling of complex valued data?
-
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
@@ -26,10 +24,52 @@ MAX_FEATURES = 100
 rng = jax.random.PRNGKey(0)
 params_rng, split_rng = jax.random.split(rng, num=2)
 
+## MODELS ##
+class MLP(nn.Module):
+    n1 : int
+    n2 : int
+
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Dense(features=self.n1, name = "dense1")(x)
+        x = nn.gelu(x)
+        x = nn.Dense(features=self.n2, name = "dense2")(x)
+        return x
+
+class Conv(nn.Module):
+    n_out : int
+
+    @nn.compact
+    def __call__(self, x):
+        # dummy axes
+        x = x[None, ..., None]
+
+        # convolutional
+        # N_C => 16 with kernel size K => 16 * K params
+        x = nn.Conv(features=16, kernel_size=(3,), padding='SAME', name='conv1')(x)
+        x = nn.gelu(x)
+        x = nn.avg_pool(x, window_shape=(2,), strides = (2,), padding='SAME')
+        x = nn.Conv(features=32, kernel_size=(3,), padding='SAME', name='conv2')(x)
+        x = nn.gelu(x)
+        x = nn.avg_pool(x, window_shape=(2,), strides = (2,), padding='SAME')
+
+        # final shape: (N_C / 2**(N_pool), number_of_features_N) => global average over reduced feature axis
+        x = x.mean(axis = 1)
+
+        # small mlp head
+        x = nn.Dense(features=self.n_out, name='dense1')(x)
+
+        return x[0]
+    
+## DATA PREPARATION ##
 def normalize(x, xm, xd):
     return (x-xm)/(xd + 1e-8)
 
 def split_data(features, targets):
+    """split data randomly into training and validation set, returning dictionary with keys: train, validation and stats (mean, sd) of features and targets in training set to be used for inference"""
+    features = jnp.array(features)
+    targets = jnp.array(targets)
+    
     data_size = targets.shape[0]
     n_training_samples = int(data_size * TRAINING_SET_PERCENTAGE)
 
@@ -41,7 +81,7 @@ def split_data(features, targets):
     fv, tv = features[validation_idxs], targets[validation_idxs]
     targets_mean, targets_sd = jnp.mean(tt, axis = 0), jnp.std(tt, axis = 0)
     features_mean, features_sd = jnp.mean(ft, axis = 0), jnp.std(ft, axis = 0)    
-    
+
     data = {
         "train" : [normalize(ft, features_mean, features_sd), normalize(tt, targets_mean, targets_sd)],
         "targets_stats" : [targets_mean, targets_sd],
@@ -51,7 +91,7 @@ def split_data(features, targets):
     
     return data
 
-def get_data(concatenate = False):
+def get_data():
     data = np.load(TRAINING_DATA)
 
     def assert_real(signal):
@@ -60,9 +100,6 @@ def get_data(concatenate = False):
         
     features = data["features"]
     assert_real(features)    
-    if concatenate == True:
-        n_samples, input_dim, _ = features.shape
-        features = features.reshape(n_samples, 2 * input_dim)        
 
     # check if moments are sufficiently real
     targets = data["moments"]
@@ -70,6 +107,7 @@ def get_data(concatenate = False):
 
     return split_data(features.real, targets.real)
 
+## VISUALIZATION ##
 def plot_loss(name):
     loss = load_loss(name)
     plt.plot(np.arange(loss.size), loss)
@@ -79,7 +117,9 @@ def plot_loss(name):
     plt.savefig(f"loss_{name}.pdf")
     plt.close()
 
+## MODEL HANDLING ##
 def sum_params_flat(x):
+    """computes number of parameters in model"""
     if isinstance(x, dict):
         return sum(map(sum_params_flat, x.values()))
     else:
@@ -88,7 +128,7 @@ def sum_params_flat(x):
 def load_model(name):
     with open(f"{PARAMS_DIR}params_{name}.pkl", "rb") as f:
         params = pickle.load(f)
-    print(f"loading {name} with {sum_params_flat(params)}")
+    print(f"loading {name}, # params: {sum_params_flat(params)}")
     return params
 
 def save_model(params, name):
@@ -101,16 +141,15 @@ def load_loss(name):
 def save_loss(loss, name):
     jnp.savez(f"{PARAMS_DIR}loss_{name}.npz", loss=jnp.array(loss))
 
+## MODEL SETUP ##
 def make_linear_regression():
     """linear regression computing
 
     c = M * x + b
 
-    where c are chebyshev coefficients, M, b are learnable weights and biases and x is the concatenated input vector of radius and phase
-    
-    x = [radius, phase]
+    where c are chebyshev coefficients, M, b are learnable weights and biases and x represents shape via fourier descriptor (absolute values, shape is centered to ensure rotational invariance)   
     """
-    data = get_data(concatenate = True)
+    data = get_data()
     features, targets = data["train"]
     
     # predict array of shape n_samples x n_batch
@@ -120,60 +159,9 @@ def make_linear_regression():
     params = model.init(params_rng, jnp.ones((features.shape[-1],), dtype=jnp.float32))
     
     return model, params
-
-class MLP(nn.Module):
-    n1 : int
-    n2 : int
-
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Dense(features=self.n1, name = "dense1")(x)
-        x = nn.sigmoid(x)
-        x = nn.Dense(features=self.n2, name = "dense2")(x)
-        return x
-
-class FusionMLP(nn.Module):
-    n1 : int
-    n2 : int
-
-    @nn.compact
-    def __call__(self, x):
-        abs_part   = x[:MAX_FEATURES, :]        
-        angle_part = x[MAX_FEATURES:, :]        
-
-        xr = nn.Dense(self.n1, name = "denseRadius")(abs_part.reshape(-1)) 
-        xa = nn.Dense(self.n1, name = "denseAngle")(angle_part.reshape(-1)) 
-        x  = jnp.concatenate([xr, xa], axis=-1)
-        x = nn.sigmoid(x)
-        x = nn.Dense(features=self.n2, name = "dense2")(x)
-
-        return x
-
-class Conv(nn.Module):
-    n_out : int
-
-    @nn.compact
-    def __call__(self, x):
-
-        # dummy axis
-        x = x[None, ...]
-
-        # convoultional
-        x = nn.Conv(features=16, kernel_size=3, padding='SAME', name='conv1')(x)
-        x = nn.relu(x)
-        x = nn.max_pool(x, window_shape=(2,), strides=(2,), padding='SAME')
-        x = nn.Conv(features=32, kernel_size=3, padding='SAME', name='conv2')(x)
-        x = nn.relu(x)
-        x = nn.max_pool(x, window_shape=(2,), strides=(2,), padding='SAME')
-
-        # dense layer
-        x = jnp.reshape(x, (x.shape[0],-1))
-        x = nn.Dense(features=self.n_out, name='dense1')(x).flatten()
-
-        return x
     
 def make_mlp():
-    data = get_data(concatenate = True)
+    data = get_data()
     features, targets = data["train"]
     
     # predict array of shape n_samples x n_batch
@@ -188,23 +176,6 @@ def make_mlp():
     
     return model, params
 
-
-def make_fusion_mlp():
-    data = get_data()
-    features, targets = data["train"]
-    
-    # predict array of shape n_samples x n_batch
-    n_out = targets.shape[-1]
-    n_in = features.shape[1]
-    n_hidden = n_out + n_in #n_out #int((n_out + n_in) * 2/3)
-
-    model = FusionMLP(n1 = n_hidden // 2, n2 = n_out)
-
-    # parameters
-    params = model.init(params_rng, jnp.ones((n_in, 2), dtype=jnp.float32))
-    
-    return model, params
-
 def make_cnn():
     data = get_data()
     
@@ -215,10 +186,11 @@ def make_cnn():
     model = Conv(n_out = n_out)    
 
     # parameters
-    params = model.init(params_rng, jnp.ones((n_in, 2), dtype=jnp.float32))
+    params = model.init(params_rng, jnp.ones((n_in,), dtype=jnp.float32))
     
     return model, params
 
+## LOSS FUNCTION ##
 def make_cost_func(model, features, targets, mean = True):
     """cost function (mean squared error)
 
@@ -228,29 +200,37 @@ def make_cost_func(model, features, targets, mean = True):
 
     returns JITed mse func
     """    
-    def sq_vec(params):
+    def mse_vec(params):
         
-        # Defines the squared loss for a single (x, y) pair.
-        def squared_error(x, y):
+        def mse(x, y):
+            """mean squared error over model dimensions
+            
+            x: fourier shape descriptors of dim Nf
+            y: chebyshev coefficients of dim Nt
+
+            returns scalar: jnp.mean((y-y_pred)**2)
+            """
             pred = model.apply(params, x)
-            # return jnp.sum( (y-pred)**2 )
-            return jnp.inner(y-pred, y-pred) / 2.0
-        
-        # Vectorizes the squared error and computes mean over the loss values.
-        return jax.vmap(squared_error)(features, targets)
-    
+            return jnp.mean((y-pred)**2)
+
+        # vectorization: F, T -> E, where dims: N x Nf, N x Nt -> N
+        return jax.vmap(mse)(features, targets)
+
+    # for training: average over samples to produce scalar
     if mean == True:
-        # return jax.jit(lambda p : jnp.log(jnp.mean(sq_vec(p), axis = 0)) )
-        return jax.jit(lambda p : jnp.mean(sq_vec(p), axis = 0))
-    
-    return jax.jit(sq_vec)
+        return jax.jit(
+            lambda p : jnp.mean(mse_vec(p))
+        )
 
+    # for validation: compute per sample
+    return jax.jit(mse_vec)
 
+## TRAIN + VALIDATE ##
 def run_linear_regression():
     model_name = "linear_regression"
     
     model, params = make_linear_regression()
-    data = get_data(concatenate = True)
+    data = get_data()
     features, targets = data["train"]
 
     run_training_loop(model, params, features, targets, model_name)    
@@ -263,19 +243,6 @@ def run_mlp():
     model_name = "mlp"
     
     model, params = make_mlp()
-    data = get_data(concatenate = True)
-    features, targets = data["train"]
-
-    run_training_loop(model, params, features, targets, model_name)    
-    plot_loss(model_name)
-
-    features, targets = data["validation"]
-    validate(model, features, targets, model_name)    
-
-def run_fusion_mlp():
-    model_name = "fusion_mlp"
-    
-    model, params = make_fusion_mlp()
     data = get_data()
     features, targets = data["train"]
 
@@ -283,7 +250,7 @@ def run_fusion_mlp():
     plot_loss(model_name)
 
     features, targets = data["validation"]
-    validate(model, features, targets, model_name)        
+    validate(model, features, targets, model_name)    
 
 def run_cnn():
     model_name = "cnn"
@@ -297,7 +264,8 @@ def run_cnn():
 
     features, targets = data["validation"]
     validate(model, features, targets, model_name)        
-    
+
+## GENERIC TRAINING ##    
 def run_training_loop(model, params, features, targets, model_name):
     """trains model and saves params
     """
@@ -330,20 +298,25 @@ def run_training_loop(model, params, features, targets, model_name):
 
     save_model(params, model_name)
     save_loss(loss_history, model_name)
-
+    
+## GENERIC VALIDATION ##
 def validate(model, features, targets, model_name):
     params = load_model(model_name)        
-    loss = make_cost_func(model, features, targets, mean = False)
+    loss = make_cost_func(model, features, targets)
     loss_vals = loss(params)
-    plt.xlabel("structure size")
+    plt.xlabel("Structure size")
     plt.ylabel("Validation loss")
-    print(model_name, ": ", jnp.mean(loss_vals))
+    print(model_name, ", validation loss: ", jnp.mean(loss_vals))
     plt.plot(np.arange(loss_vals.size), loss_vals)
     plt.savefig(f"loss_validation_{model_name}.pdf")
     plt.close()
 
 if __name__ == '__main__':
+    # simple baseline to test against
+    run_linear_regression()
+
+    # small fcn
+    run_mlp()
+
+    # exploit context
     run_cnn()
-    # run_fusion_mlp()
-    # run_linear_regression()
-    # run_mlp()
