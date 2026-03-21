@@ -317,6 +317,12 @@ def run_training_loop(model, params, features, targets, model_name, use_scan = T
     save_loss(loss_history, model_name)
     
 ## GENERIC VALIDATION ##
+def r_squared(y, y_pred):
+    """R^2 per chebyshev coefficient"""
+    ss_res =  ((y-y_pred)**2).mean(axis = 0)
+    ss_tot = y.var(axis = 0) + 1e-12
+    return 1 - ss_res / ss_tot
+
 def validate(model, data, model_name):
     x_std, y_std = data["validation"]
     x_mean, x_sigma = data["features_stats"]
@@ -347,7 +353,8 @@ def validate(model, data, model_name):
     plt.xlabel("Structure size")
     plt.ylabel("Validation loss")
     print(model_name, ", validation loss: ", jnp.mean(loss_vals))
-    plt.plot(x.sum(axis =  1), loss_vals)
+    print(model_name, ", median R^2: ", jnp.median(r_squared(y, y_pred)) )
+    plt.plot(x.sum(axis = 1), loss_vals)
     plt.savefig(f"loss_validation_{model_name}.pdf")
     plt.close()
 
