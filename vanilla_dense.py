@@ -17,7 +17,7 @@ PARAMS_DIR = "./"
 # TRAINING_SET_PERCENTAGE = .6
 
 LEARNING_RATE = 1e-2
-NUM_STEPS = 2000
+NUM_STEPS = 500
 TRAINING_SET_PERCENTAGE = .8
 
 MAX_FEATURES = 100
@@ -27,7 +27,7 @@ rng = jax.random.PRNGKey(0)
 params_rng, split_rng = jax.random.split(rng, num=2)
 
 def normalize(x, xm, xd):
-    return (x-xm)/xd
+    return (x-xm)/(xd + 1e-8)
 
 def split_data(features, targets):
     data_size = targets.shape[0]
@@ -40,8 +40,7 @@ def split_data(features, targets):
     ft, tt = features[training_idxs], targets[training_idxs]
     fv, tv = features[validation_idxs], targets[validation_idxs]
     targets_mean, targets_sd = jnp.mean(tt, axis = 0), jnp.std(tt, axis = 0)
-    features_mean, features_sd = jnp.mean(ft, axis = 0), jnp.std(ft, axis = 0)
-    
+    features_mean, features_sd = jnp.mean(ft, axis = 0), jnp.std(ft, axis = 0)    
     
     data = {
         "train" : [normalize(ft, features_mean, features_sd), normalize(tt, targets_mean, targets_sd)],
@@ -147,8 +146,31 @@ class FusionMLP(nn.Module):
         x  = jnp.concatenate([xr, xa], axis=-1)
         x = nn.sigmoid(x)
         x = nn.Dense(features=self.n2, name = "dense2")(x)
+
         return x
 
+class Conv(nn.Module):
+    n_out : int
+
+    @nn.compact
+    def __call__(self, x):
+
+        # dummy axis
+        x = x[None, ...]
+
+        # convoultional
+        x = nn.Conv(features=16, kernel_size=3, padding='SAME', name='conv1')(x)
+        x = nn.relu(x)
+        x = nn.max_pool(x, window_shape=(2,), strides=(2,), padding='SAME')
+        x = nn.Conv(features=32, kernel_size=3, padding='SAME', name='conv2')(x)
+        x = nn.relu(x)
+        x = nn.max_pool(x, window_shape=(2,), strides=(2,), padding='SAME')
+
+        # dense layer
+        x = jnp.reshape(x, (x.shape[0],-1))
+        x = nn.Dense(features=self.n_out, name='dense1')(x).flatten()
+
+        return x
     
 def make_mlp():
     data = get_data(concatenate = True)
@@ -183,6 +205,19 @@ def make_fusion_mlp():
     
     return model, params
 
+def make_cnn():
+    data = get_data()
+    
+    features, targets = data["train"]
+    n_out = targets.shape[-1]
+    n_in = features.shape[1]
+    
+    model = Conv(n_out = n_out)    
+
+    # parameters
+    params = model.init(params_rng, jnp.ones((n_in, 2), dtype=jnp.float32))
+    
+    return model, params
 
 def make_cost_func(model, features, targets, mean = True):
     """cost function (mean squared error)
@@ -249,6 +284,19 @@ def run_fusion_mlp():
 
     features, targets = data["validation"]
     validate(model, features, targets, model_name)        
+
+def run_cnn():
+    model_name = "cnn"
+    
+    model, params = make_cnn()
+    data = get_data()
+    features, targets = data["train"]
+
+    run_training_loop(model, params, features, targets, model_name)    
+    plot_loss(model_name)
+
+    features, targets = data["validation"]
+    validate(model, features, targets, model_name)        
     
 def run_training_loop(model, params, features, targets, model_name):
     """trains model and saves params
@@ -295,6 +343,7 @@ def validate(model, features, targets, model_name):
     plt.close()
 
 if __name__ == '__main__':
-    run_linear_regression()
-    run_mlp()
-    run_fusion_mlp()
+    run_cnn()
+    # run_fusion_mlp()
+    # run_linear_regression()
+    # run_mlp()
