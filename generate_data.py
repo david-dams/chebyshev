@@ -10,6 +10,7 @@ R_MAX = 200
 R_STEPS = 500
 N_MIN = 3
 N_MAX = 12
+MAX_FEATURES = 100
 
 # just to check
 def _plot_boundary(fsyst):
@@ -88,7 +89,7 @@ def extract_features():
         
         try:
             data = np.load(fname)
-            features.append(fft(data["pos"]))
+            features.append(fft(data["pos"])[:MAX_FEATURES])
             moments.append(data["moments"])
             names.append(fname)            
             
