@@ -1,6 +1,6 @@
 import kwant
 import numpy as np
-from numpy.fft import fft
+from numpy.fft import rfft
 import itertools
 import shapely
 import matplotlib.pyplot as plt
@@ -83,16 +83,25 @@ def extract_features():
     features = []
     moments = []
     names = []
+
+    def pad(signal):
+        return np.pad(signal, ((0, MAX_FEATURES - signal.shape[0]), (0,0)))
     
     for r, n in get_grid():
         fname = f"{_safe_key(r, n)}.npz"
-        
+
         try:
             data = np.load(fname)
-            trafo = fft(data["pos"])[:MAX_FEATURES]
-            diff = MAX_FEATURES - trafo.shape[0]
-            trafo_padded = np.pad(trafo, ((0, diff), (0,0)))
-            features.append(trafo_padded)
+
+            # real fourier trafo (=> only positive freq compoents, including zero)
+            trafo = rfft(data["pos"], axis = 0)
+
+            # truncate and transform to two-column array: x, y [abs[0], ..., abs[N], angles[0], ..., angles[N]]
+            r = np.abs(trafo)[:MAX_FEATURES]
+            angle = np.angle(trafo)[:MAX_FEATURES]            
+            trafo_abs_angle = np.concatenate([pad(r), pad(angle)])
+            
+            features.append(trafo_abs_angle)
             moments.append(data["moments"])
             names.append(fname)            
             
