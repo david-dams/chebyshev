@@ -5,8 +5,6 @@ import matplotlib.pyplot as plt
 
 from generate_data import get_system, get_grid
 
-N_SAMPLES = 4
-
 def get_spectrum(s, energy, moments):
     energy = np.asarray(energy)
     e = (energy - s._b) / s._a
@@ -17,7 +15,7 @@ def get_spectrum(s, energy, moments):
 
     return np.transpose(chebval(e, moments) / g_e)
 
-def get_predictions(name):
+def get_predictions(name, n_samples = None):
     data = np.load(f"{name}_predictions.npz")
     
     y = data["y"]
@@ -26,32 +24,77 @@ def get_predictions(name):
     corners = data["corners"]
 
     # randomly plot some spectra
-    idxs = np.random.choice(y.shape[0], N_SAMPLES)
+    if n_samples is not None:
+        np.random.seed(0)    
+        idxs = np.random.choice(y.shape[0], N_SAMPLES)
+    # sort by size
+    else:
+        idxs = radii.argsort()        
 
     return y[idxs], y_pred[idxs], radii[idxs], corners[idxs]
 
+def maybe_to_int(n):
+    if n == np.inf:
+        return n
+    return int(n)
+
 def plot_predictions(name):
     
-    y, y_pred, radii, corners = get_predictions(name)
+    y, y_pred, radii, corners = get_predictions(name, n_samples = 4)
 
+    fig, ax = plt.subplots(1,1)
     for i, r in enumerate(radii):        
-        fsyst = get_system(float(r), int(corners[i]))        
+        fsyst = get_system(float(r), maybe_to_int(corners[i]))     
         spectrum = kwant.kpm.SpectralDensity(fsyst)
 
-        # analytical reference
-        energies, densities = spectrum()
-        plt.plot(energies, densities.real)
+        # sample energies from analytical reference
+        energies = spectrum.energies
+        # energies, densities = spectrum()
+        # plt.plot(spectrum.energies, densities.real)
 
+        # TODO: there are some slight deviations between ref and analytical => probably float stuff from loading
         # sanity check: these we saved and should give the same results as the reference
         densities_ref = get_spectrum(spectrum, energies, y[i])
         plt.plot(energies, densities_ref.real, '.-')
         
         # prediction
         densities_pred = get_spectrum(spectrum, energies, y_pred[i])
-        plt.plot(energies, densities_pred.real, '--')
+        ax.plot(energies, densities_pred.real, '--')
 
-        # plt.savefig(f"{name}_{r}_{corners[i]}.pdf")
-        plt.show()
+    plt.savefig(f"{name}.pdf")
+    # plt.show()
 
+def plot_predictions_2d(name):
+    
+    y, y_pred, radii, corners = get_predictions(name)
+
+    spectra_ref, spectra_pred = [], []
+
+    fig, ax = plt.subplots(1,1)
+    for i, r in enumerate(radii):        
+        fsyst = get_system(float(r), maybe_to_int(corners[i]))     
+        spectrum = kwant.kpm.SpectralDensity(fsyst)
+        
+        energies = spectrum.energies
+        
+        densities_ref = get_spectrum(spectrum, energies, y[i])
+        densities_pred = get_spectrum(spectrum, energies, y_pred[i])
+
+        spectra_ref.append(densities_ref)
+        spectra_pred.append(densities_pred)
+
+    plt.matshow(densities_ref)        
+    plt.savefig(f"2d_{name}_ref.pdf")
+
+    plt.matshow(densities_pred)        
+    plt.savefig(f"2d_{name}_pred.pdf")
+
+    
 if __name__ == "__main__":
-    plot_predictions("cnn")    
+    # plot_predictions("cnn")    
+    # plot_predictions("linear_regression")    
+    # plot_predictions("mlp")    
+
+    plot_predictions_2d("cnn")    
+    plot_predictions_2d("linear_regression")    
+    plot_predictions_2d("mlp")    
