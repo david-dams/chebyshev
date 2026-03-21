@@ -76,19 +76,32 @@ def generate_data():
             moments=np.asarray(moments),
         )
 
-
-def read_data():
+def extract_features():
+    training_name = "training.npz"
+    features = []
+    moments = []
+    names = []
+    
     for r, n in get_grid():
         fname = f"{_safe_key(r, n)}.npz"
-
+        
         try:
             data = np.load(fname)
+            features.append(fft(data["pos"]))
+            moments.append(data["moments"])
+            names.append(fname)            
+            
         except FileNotFoundError:
             pass
-
-
+        
+    np.savez_compressed(
+        training_name,
+        features = features,
+        moments = moments,
+        names = names        
+    )
         
 if __name__ == '__main__':
     np.random.seed(0)
     generate_data()
-    # read_data()
+    extract_features()
