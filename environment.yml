@@ -1,0 +1,16 @@
+name: chebyshev
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - jax
+  - flax
+  - optax
+  - pytest
+  - numpy
+  - kwant
+  - matplotlib
+  - shapely
+  - pip
+  - pip:
+      - -e .

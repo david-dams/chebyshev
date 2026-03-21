@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chebyshev"
+version = "0.0.1"
+description = "Machine learning chebyshev coefficients for 2D materials"
+readme = "README.md"
+requires-python = ">=3.13"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
