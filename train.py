@@ -1,426 +1,468 @@
+import os
+import pickle
+from dataclasses import dataclass
+
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
-import optax
-import pickle
 import numpy as np
+import optax
 import matplotlib.pyplot as plt
 
-TRAINING_DATA = "training.npz"
-PARAMS_DIR = "./"
 
-# seems good for linear regression
-# LEARNING_RATE = 0.5
-# NUM_STEPS = 1000
-# TRAINING_SET_PERCENTAGE = .6
+TRAINING_DATA = "training.npz"
+PARAMS_DIR = "params/"
+PLOT_DIR = "plots/"
+PREDICTIONS_DIR = "predictions/"
+
+os.makedirs(PARAMS_DIR, exist_ok=True)
+os.makedirs(PLOT_DIR, exist_ok=True)
+os.makedirs(PREDICTIONS_DIR, exist_ok=True)
 
 LEARNING_RATE = 1e-2
 NUM_STEPS = 500
-TRAINING_SET_PERCENTAGE = .8
+TRAINING_SET_PERCENTAGE = 0.8
+
+HOLDOUT_RADIUS_RANGE = (20.0, 40.0)   
+HOLDOUT_MODE = "radius_interval"  # "random"
+BATCH_SIZE = 128
+SHUFFLE_EACH_EPOCH = True
 
 MAX_FEATURES = 100
+N_MOMENTS = 100
+NORMALIZE_AB = True
 
-# TODO: no global
-rng = jax.random.PRNGKey(0)
-params_rng, split_rng = jax.random.split(rng, num=2)
-
-# model names
 CNN = "cnn"
 VANILLA = "mlp"
 LINEAR_REGRESSION = "linear_regression"
 
-## MODELS ##
+rng = jax.random.PRNGKey(0)
+params_rng, split_rng = jax.random.split(rng, 2)
+
+
+# ----------------------------
+# Models
+# ----------------------------
 class Linear(nn.Module):
-    n_out : int
+    n_out: int
 
     @nn.compact
     def __call__(self, x):
-        
-        mu = nn.Dense(features=self.n_out, name = "chebyshev")(x)
-        ab = nn.Dense(features=2, name = "energy")(x)
-        
-        return {"mu" : mu, "ab" : ab}
+        mu = nn.Dense(features=self.n_out, name="chebyshev")(x)
+        ab = nn.Dense(features=2, name="energy")(x)
+        return {"mu": mu, "ab": ab}
+
 
 class MLP(nn.Module):
-    n1 : int
-    n2 : int
+    n_hidden: int
+    n_out: int
 
     @nn.compact
     def __call__(self, x):
-        h = nn.Dense(features=self.n1, name = "dense1")(x)
+        h = nn.Dense(features=self.n_hidden, name="dense1")(x)
         h = nn.gelu(h)
-        
-        mu = nn.Dense(features=self.n2, name = "dense_chebyshev")(h)
-        ab = nn.Dense(features=2, name = "dense_energy")(h)
-        
-        return {"mu" : mu, "ab" : ab}
+        mu = nn.Dense(features=self.n_out, name="dense_chebyshev")(h)
+        ab = nn.Dense(features=2, name="dense_energy")(h)
+        return {"mu": mu, "ab": ab}
+
 
 class Conv(nn.Module):
-    n_out : int
+    n_out: int
 
     @nn.compact
     def __call__(self, x):
-        # dummy axes
-        x = x[None, ..., None]
+        # x: (n_features,)
+        x = x[None, :, None]  # -> (1, length, channels)
 
-        # convolutional
-        # N_C => 16 with kernel size K => 16 * K params
-        x = nn.Conv(features=16, kernel_size=(3,), padding='SAME', name='conv1')(x)
+        x = nn.Conv(features=16, kernel_size=(3,), padding="SAME", name="conv1")(x)
         x = nn.gelu(x)
-        x = nn.avg_pool(x, window_shape=(2,), strides = (2,), padding='SAME')
-        x = nn.Conv(features=32, kernel_size=(3,), padding='SAME', name='conv2')(x)
+        x = nn.avg_pool(x, window_shape=(2,), strides=(2,), padding="SAME")
+
+        x = nn.Conv(features=32, kernel_size=(3,), padding="SAME", name="conv2")(x)
         x = nn.gelu(x)
-        x = nn.avg_pool(x, window_shape=(2,), strides = (2,), padding='SAME')
+        x = nn.avg_pool(x, window_shape=(2,), strides=(2,), padding="SAME")
 
-        # final shape: (N_C / 2**(N_pool), number_of_features_N) => global average over reduced feature axis
-        x = x.mean(axis = 1)
+        x = x.mean(axis=1)  # global average over length axis -> (1, channels)
 
-        # small mlp head
-        mu = nn.Dense(features=self.n_out, name='dense_chebyshev')(x)
+        mu = nn.Dense(features=self.n_out, name="dense_chebyshev")(x)[0]
+        ab = nn.Dense(features=2, name="dense_energy")(x)[0]
+        return {"mu": mu, "ab": ab}
 
-        # energy limit head
-        ab = nn.Dense(features=2, name='dense_energy')(x)
 
-        return {"mu" : mu[0], "ab" : ab[0]}
-    
-## DATA PREPARATION ##
-def normalize(x, xm, xd):
-    return (x-xm)/(xd + 1e-8)
+# ----------------------------
+# Utilities
+# ----------------------------
+def normalize(x, mean, std):
+    return (x - mean) / (std + 1e-8)
 
-def denormalize(x, xm, xd):
-    return x*(xd + 1e-8) + xm
 
-def get_features_targets(data):
-    return {"fourier" : data["fourier"] }, { "mu" : data["mu"], "ab" : data["ab"]}
+def denormalize(x, mean, std):
+    return x * (std + 1e-8) + mean
 
-def split_data(features, targets, radii, corners, lower_limits, upper_limits):
-    """split data randomly into training and validation set, returning dictionary with keys: train, validation and stats (mean, sd) of features and targets in training set to be used for inference"""
-    def _get_stats(arr, idxs):
-        return jnp.mean(arr[idxs], axis = 0), jnp.std(arr[idxs], axis = 0)
-    
-    def _get_data_dict(idxs):
-        return {
-            "fourier": normalize(fourier[idxs], fourier_mean, fourier_sd),
-            "mu" : normalize(mu[idxs], mu_mean, mu_sd),
-            "ab" : jnp.stack([lower_limits[idxs], upper_limits[idxs]], axis = 1),
-            "radii" : radii[idxs],
-            "corners" : corners[idxs]
-        }
-    
-    fourier = jnp.array(features)
-    mu = jnp.array(targets)
-    radii = jnp.array(radii)
-    corners = jnp.array(corners)
-    lower_limits = jnp.array(lower_limits)
-    upper_limits = jnp.array(upper_limits)
-    
-    data_size = targets.shape[0]
-    n_training_samples = int(data_size * TRAINING_SET_PERCENTAGE)
 
-    permutation = jax.random.permutation(split_rng, data_size)
-    training_idxs = permutation[:n_training_samples]
-    validation_idxs = permutation[n_training_samples:]
+def assert_real(name, arr, tol=1e-10):
+    arr = np.asarray(arr)
+    if np.iscomplexobj(arr):
+        max_imag = np.abs(arr.imag).max()
+        assert max_imag < tol, f"{name} has large imaginary part: {max_imag}"
 
-    fourier_mean, fourier_sd = _get_stats(fourier, training_idxs)
-    mu_mean, mu_sd = _get_stats(mu, training_idxs)
 
-    data = {
-        "train" : _get_data_dict(training_idxs),
-        "validation" : _get_data_dict(validation_idxs), 
-        "mu_mean" : mu_mean,
-        "mu_sd" : mu_sd,
-        "fourier_mean" : fourier_mean,
-        "fourier_sd" : fourier_sd
-    }
-    
-    return data
+def sum_params_flat(x):
+    if isinstance(x, dict):
+        return sum(map(sum_params_flat, x.values()))
+    return x.size
 
-def get_data():
-    data = np.load(TRAINING_DATA)
 
-    def assert_real(signal):
-        max_imag = np.abs(signal.imag).max()
-        assert max_imag < 1e-10, f"Large imaginary parts in Chebyshev moments {max_imag}!"
-        
-    features = data["features"]
-    assert_real(features)    
+def save_model(params, name):
+    with open(os.path.join(PARAMS_DIR, f"params_{name}.pkl"), "wb") as f:
+        pickle.dump(params, f)
 
-    # check if moments are sufficiently real
-    targets = data["moments"]
-    assert_real(targets)
-    
-    # TODO: this is for debug, remove on real data
-    if "lower_limits" in data:
-        lower_limits = data["lower_limits"]
-        upper_limits = data["upper_limits"]
-    else: 
-        lower_limits = jnp.arange(features.shape[0]) + 10
-        upper_limits = jnp.arange(features.shape[0]) + 10
 
-    return split_data(features.real, targets.real, data["radii"], data["corners"], lower_limits, upper_limits)
+def load_model(name):
+    with open(os.path.join(PARAMS_DIR, f"params_{name}.pkl"), "rb") as f:
+        params = pickle.load(f)
+    print(f"loaded {name}, #params = {sum_params_flat(params)}")
+    return params
 
-## VISUALIZATION ##
+
+def save_loss(loss_history, name):
+    np.savez(os.path.join(PARAMS_DIR, f"loss_{name}.npz"), loss=np.asarray(loss_history))
+
+
+def load_loss(name):
+    return np.load(os.path.join(PARAMS_DIR, f"loss_{name}.npz"))["loss"]
+
+
 def plot_loss(name):
     loss = load_loss(name)
     plt.plot(np.arange(loss.size), loss)
-    plt.title(f'Train loss for {name}')
-    plt.xlabel('Step')
-    plt.ylabel('MSE')
-    plt.savefig(f"loss_{name}.pdf")
+    plt.xlabel("step")
+    plt.ylabel("train loss")
+    plt.title(f"Training loss: {name}")
+    plt.savefig(os.path.join(PLOT_DIR, f"loss_{name}.pdf"))
     plt.close()
 
-## MODEL HANDLING ##
-def sum_params_flat(x):
-    """computes number of parameters in model"""
-    if isinstance(x, dict):
-        return sum(map(sum_params_flat, x.values()))
+
+# ----------------------------
+# Data container
+# ----------------------------
+@dataclass
+class Dataset:
+    train: dict
+    validation: dict
+    x_mean: jnp.ndarray
+    x_std: jnp.ndarray
+    mu_mean: jnp.ndarray
+    mu_std: jnp.ndarray
+    ab_mean: jnp.ndarray
+    ab_std: jnp.ndarray
+
+
+# ----------------------------
+# Data loading / splitting
+# ----------------------------
+def split_data(features, moments, radii, corners, lower_limits, upper_limits,
+               holdout_mode="random",
+               holdout_radius_range=None):
+    x = jnp.asarray(features, dtype=jnp.float32)
+    mu = jnp.asarray(moments, dtype=jnp.float32)
+    radii = jnp.asarray(radii, dtype=jnp.float32)
+    corners = jnp.asarray(corners, dtype=jnp.float32)
+
+    ab = jnp.stack(
+        [
+            jnp.asarray(lower_limits, dtype=jnp.float32),
+            jnp.asarray(upper_limits, dtype=jnp.float32),
+        ],
+        axis=1,
+    )
+
+    n_samples = x.shape[0]
+
+    if holdout_mode == "random":
+        n_train = int(TRAINING_SET_PERCENTAGE * n_samples)
+        perm = jax.random.permutation(split_rng, n_samples)
+        idx_train = perm[:n_train]
+        idx_val = perm[n_train:]
+
+    elif holdout_mode == "radius_interval":
+        if holdout_radius_range is None:
+            raise ValueError("holdout_radius_range must be provided for radius_interval mode")
+
+        rmin, rmax = holdout_radius_range
+        val_mask = (radii >= rmin) & (radii <= rmax)
+        train_mask = ~val_mask
+
+        idx_train = jnp.where(train_mask)[0]
+        idx_val = jnp.where(val_mask)[0]
+
+        if idx_train.size == 0:
+            raise ValueError("No training samples left after radius holdout")
+        if idx_val.size == 0:
+            raise ValueError("No validation samples in requested radius holdout range")
+
     else:
-        return x.size
-    
-def load_model(name):
-    with open(f"{PARAMS_DIR}params_{name}.pkl", "rb") as f:
-        params = pickle.load(f)
-    print(f"loading {name}, # params: {sum_params_flat(params)}")
-    return params
+        raise ValueError(f"Unknown holdout_mode: {holdout_mode}")
 
-def save_model(params, name):
-    with open(f"{PARAMS_DIR}params_{name}.pkl", "wb") as f:
-        pickle.dump(params, f)
+    def stats(arr, idx):
+        return jnp.mean(arr[idx], axis=0), jnp.std(arr[idx], axis=0)
 
-def load_loss(name):
-    return jnp.load(f"{PARAMS_DIR}loss_{name}.npz")["loss"]
+    x_mean, x_std = stats(x, idx_train)
+    mu_mean, mu_std = stats(mu, idx_train)
+    ab_mean, ab_std = stats(ab, idx_train)
 
-def save_loss(loss, name):
-    jnp.savez(f"{PARAMS_DIR}loss_{name}.npz", loss=jnp.array(loss))
+    def pack(idxs):
+        x_part = normalize(x[idxs], x_mean, x_std)
+        mu_part = normalize(mu[idxs], mu_mean, mu_std)
+        ab_part = normalize(ab[idxs], ab_mean, ab_std) if NORMALIZE_AB else ab[idxs]
 
-## MODEL SETUP ##
-def make_linear_regression():
-    """linear regression computing
+        return {
+            "fourier": x_part,
+            "mu": mu_part,
+            "ab": ab_part,
+            "radii": radii[idxs],
+            "corners": corners[idxs],
+        }
 
-    c = M * x + b
+    return Dataset(
+        train=pack(idx_train),
+        validation=pack(idx_val),
+        x_mean=x_mean,
+        x_std=x_std,
+        mu_mean=mu_mean,
+        mu_std=mu_std,
+        ab_mean=ab_mean,
+        ab_std=ab_std,
+    )
 
-    where c are chebyshev coefficients, M, b are learnable weights and biases and x represents shape via fourier descriptor (absolute values, shape is centered to ensure rotational invariance)   
-    """
-    data = get_data()
-    features, targets = get_features_targets(data["train"])
-    
-    # predict array of shape n_samples x n_batch
-    model = Linear(targets["mu"].shape[-1])
+def get_data():
+    raw = np.load(TRAINING_DATA, allow_pickle=False)
 
-    # parameters
-    params = model.init(params_rng, jnp.ones((features["fourier"].shape[-1],), dtype=jnp.float32))
-    
-    return model, params
-    
-def make_mlp():
-    data = get_data()
-    features, targets = get_features_targets(data["train"])
-    
-    # predict array of shape n_samples x n_batch
-    n_out = targets["mu"].shape[-1]
-    n_in = features["fourier"].shape[-1]
-    n_hidden = n_out + n_in #n_out #int((n_out + n_in) * 2/3)
+    features = raw["features"][..., :MAX_FEATURES]
+    moments = raw["moments"][..., :N_MOMENTS]
 
-    model = MLP(n1 = n_hidden, n2 = n_out)
+    assert_real("features", features)
+    assert_real("moments", moments)
 
-    # parameters
+    features = np.asarray(features.real, dtype=np.float32)
+    moments = np.asarray(moments.real, dtype=np.float32)
+
+    radii = np.asarray(raw["radii"], dtype=np.float32)
+    corners = np.asarray(raw["corners"], dtype=np.float32)
+
+    if "lower_limits" in raw and "upper_limits" in raw:
+        lower_limits = np.asarray(raw["lower_limits"], dtype=np.float32)
+        upper_limits = np.asarray(raw["upper_limits"], dtype=np.float32)
+    else:
+        lower_limits = np.zeros(features.shape[0], dtype=np.float32)
+        upper_limits = np.zeros(features.shape[0], dtype=np.float32)
+
+    return split_data(
+        features,
+        moments,
+        radii,
+        corners,
+        lower_limits,
+        upper_limits,
+        holdout_mode=HOLDOUT_MODE,
+        holdout_radius_range=HOLDOUT_RADIUS_RANGE,
+    )
+
+def get_features_targets(split):
+    x = {"fourier": split["fourier"]}
+    y = {"mu": split["mu"], "ab": split["ab"]}
+    return x, y
+
+
+# ----------------------------
+# Model construction
+# ----------------------------
+def make_model(model_name, data: Dataset):
+    x_train, y_train = get_features_targets(data.train)
+    n_in = x_train["fourier"].shape[-1]
+    n_out = y_train["mu"].shape[-1]
+
+    if model_name == LINEAR_REGRESSION:
+        model = Linear(n_out=n_out)
+    elif model_name == VANILLA:
+        n_hidden = n_in + n_out
+        model = MLP(n_hidden=n_hidden, n_out=n_out)
+    elif model_name == CNN:
+        model = Conv(n_out=n_out)
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
     params = model.init(params_rng, jnp.ones((n_in,), dtype=jnp.float32))
-    
     return model, params
 
-def make_cnn():
-    data = get_data()
-    
-    features, targets = get_features_targets(data["train"])
-    n_out = targets["mu"].shape[-1]
-    n_in = features["fourier"].shape[1]
-    
-    model = Conv(n_out = n_out)    
 
-    # parameters
-    params = model.init(params_rng, jnp.ones((n_in,), dtype=jnp.float32))
-    
-    return model, params
-
-MODELS = {CNN : make_cnn, VANILLA : make_mlp, LINEAR_REGRESSION : make_linear_regression}
-
-## LOSS FUNCTION ##
-def make_cost_func(model, features, targets, l = 1.0):
-    """cost function (mean squared error)
-
-    model :
-    features : 
-    targets :
-
-    returns JITed mse func
-    """    
-    def mse_vec(params):
-        
-        def mse(x, y):
-            """mean squared error over model dimensions
-            
-            x: feature dict
-            y: targets dict
-
-            returns scalar: jnp.mean((y-y_pred)**2)
-            """
+# ----------------------------
+# Loss / training
+# ----------------------------
+def make_loss_fn(model, features, targets, ab_weight=1.0):
+    def loss_fn(params):
+        def per_sample(x, y):
             pred = model.apply(params, x["fourier"])
-            err_mu = jnp.mean((y["mu"]-pred["mu"])**2)
-            err_ab = jnp.mean((y["ab"]-pred["ab"])**2)                                   
-            return err_mu + l * err_ab
+            err_mu = jnp.mean((y["mu"] - pred["mu"]) ** 2)
+            err_ab = jnp.mean((y["ab"] - pred["ab"]) ** 2)
+            return err_mu + ab_weight * err_ab
 
-        # vectorization: F, T -> E, where dims: N x Nf, N x Nt -> N
-        return jax.vmap(mse)(features, targets)
-    
-    func = lambda p : jnp.mean(mse_vec(p))
-        
-    return jax.jit(func)
+        return jnp.mean(jax.vmap(per_sample)(features, targets))
 
-## TRAIN + VALIDATE ##
-def run_model(model_name, use_scan = True):    
-    model, params = MODELS[model_name]()
-    data = get_data()
-    features, targets = get_features_targets(data["train"])
+    return jax.jit(loss_fn)
 
-    # TODO: for whatever reason, JIT in scan is slower for cnn than plain Python (at least on CPU)
-    run_training_loop(model, params, features, targets, model_name, use_scan = use_scan)    
-    plot_loss(model_name)
 
-    validate(model, data, model_name)
-
-## GENERIC TRAINING ##
-def get_training_func(tx, loss_grad_fn):
-    
-    # scan JITs => speeds up training
-    def training_func(carry, loss):
+def get_training_step(tx, loss_grad_fn):
+    def step(carry, _):
         params, opt_state = carry
         loss_val, grads = loss_grad_fn(params)
-        updates, opt_state = tx.update(grads, opt_state)
+        updates, opt_state = tx.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
         return (params, opt_state), loss_val
 
-    return training_func
+    return step
 
-def run_training_loop(model, params, features, targets, model_name, use_scan = True):
-    """trains model and saves params
-    """
-        
-    loss = make_cost_func(model, features, targets)
 
-    # Creates a function that returns value and gradient of the loss. 
-    loss_grad_fn = jax.value_and_grad(loss)
+def run_training_loop(model, params, data: Dataset, model_name, use_scan=True, ab_weight=1.0):
+    x_train, y_train = get_features_targets(data.train)
 
-    tx = optax.chain(
-        # Sets the parameters of Adam. Note the learning_rate is not here.
-        optax.scale_by_adam(b1=0.9, b2=0.999, eps=1e-8),
-        # Puts a minus sign to *minimize* the loss.
-        optax.scale(-LEARNING_RATE)
-    )
+    loss_fn = make_loss_fn(model, x_train, y_train, ab_weight=ab_weight)
+    loss_grad_fn = jax.value_and_grad(loss_fn)
 
-    
+    tx = optax.adam(learning_rate=LEARNING_RATE)
     opt_state = tx.init(params)
 
-    if use_scan == True:
-        f = get_training_func(tx, loss_grad_fn)
-        carry, loss_history = jax.lax.scan(f,
-                                           (params, opt_state),
-                                           xs = None,
-                                           length = NUM_STEPS)
-        params, _ = carry
-
+    if use_scan:
+        step_fn = get_training_step(tx, loss_grad_fn)
+        (params, _), loss_history = jax.lax.scan(
+            step_fn,
+            (params, opt_state),
+            xs=None,
+            length=NUM_STEPS,
+        )
     else:
         loss_history = []
         for _ in range(NUM_STEPS):
             loss_val, grads = loss_grad_fn(params)
-            loss_history.append(loss_val)
-            updates, opt_state = tx.update(grads, opt_state)
+            updates, opt_state = tx.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
-        
+            loss_history.append(loss_val)
+        loss_history = jnp.asarray(loss_history)
+
     save_model(params, model_name)
     save_loss(loss_history, model_name)
-    
-## GENERIC VALIDATION ##
+    return params
+
+
+# ----------------------------
+# Validation
+# ----------------------------
 def r_squared(y, y_pred):
-    """R^2 per chebyshev coefficient"""
-    ss_res =  ((y-y_pred)**2).mean(axis = 0)
-    ss_tot = y.var(axis = 0) + 1e-12
-    return 1 - ss_res / ss_tot
+    ss_res = ((y - y_pred) ** 2).mean(axis=0)
+    ss_tot = y.var(axis=0) + 1e-12
+    return 1.0 - ss_res / ss_tot
 
-def mse(model, params, data, normalize):
-    x, y = get_features_targets(data["validation"])
-    y_pred = jax.vmap(lambda x : model.apply(params, x))(x["fourier"])
 
-    y_pred_mu = y_pred["mu"]
-    y_pred_ab = y_pred["ab"]    
+def predict_split(model, params, split, data: Dataset, denorm_mu=True, denorm_ab=True):
+    x, y = get_features_targets(split)
+    pred = jax.vmap(lambda xi: model.apply(params, xi))(x["fourier"])
+
     y_mu = y["mu"]
     y_ab = y["ab"]
-    
-    if normalize == False:
-        y_mean, y_sigma = data["mu_mean"], data["mu_sd"]
-        y_pred_mu = denormalize(y_pred["mu"], y_mean, y_sigma)
-        y_mu = denormalize(y["mu"], y_mean, y_sigma)
-        
-    err_mu = jnp.mean((y_mu-y_pred_mu)**2, axis = 1)
-    err_ab = jnp.mean((y_ab-y_pred_ab)**2, axis = 1)                                   
-        
-    return {"mu" : err_mu, "ab" : err_ab}
+    y_pred_mu = pred["mu"]
+    y_pred_ab = pred["ab"]
 
-def plot_validation_loss(data, err, xlabel, ylabel, name):    
-    plt.xlabel(xlabel)
+    if denorm_mu:
+        y_mu = denormalize(y_mu, data.mu_mean, data.mu_std)
+        y_pred_mu = denormalize(y_pred_mu, data.mu_mean, data.mu_std)
+
+    if denorm_ab and NORMALIZE_AB:
+        y_ab = denormalize(y_ab, data.ab_mean, data.ab_std)
+        y_pred_ab = denormalize(y_pred_ab, data.ab_mean, data.ab_std)
+
+    return {
+        "y_mu": y_mu,
+        "y_pred_mu": y_pred_mu,
+        "y_ab": y_ab,
+        "y_pred_ab": y_pred_ab,
+        "radii": split["radii"],
+        "corners": split["corners"],
+    }
+
+
+def compute_errors(pred_dict):
+    err_mu_per_sample = jnp.mean((pred_dict["y_mu"] - pred_dict["y_pred_mu"]) ** 2, axis=1)
+    err_ab_per_sample = jnp.mean((pred_dict["y_ab"] - pred_dict["y_pred_ab"]) ** 2, axis=1)
+    r2_mu = r_squared(pred_dict["y_mu"], pred_dict["y_pred_mu"])
+    return {
+        "mu": err_mu_per_sample,
+        "ab": err_ab_per_sample,
+        "r2_mu": r2_mu,
+    }
+
+
+def plot_validation_vs_radius(radii, err, ylabel, filename):
+    radii = np.asarray(radii)
+    err = np.asarray(err)
+    idx = np.argsort(radii)
+
+    plt.scatter(radii[idx], err[idx], s=6)
+    plt.xlabel("radius")
     plt.ylabel(ylabel)
-    
-    print(name, {a : jnp.mean(b) for a, b in err.items()})
-    
-    plt.plot(data["validation"]["radii"], err["mu"])
-    plt.savefig(name)
+    plt.savefig(filename)
     plt.close()
 
-def validate(model, data, model_name):    
-    # standardized error
+
+def validate(model, data: Dataset, model_name):
     params = load_model(model_name)
 
-    err = mse(model, params, data, normalize = True)
-    plot_validation_loss(data, err, xlabel = 'radius', ylabel = 'error (std)', name = model_name + "_err_std.pdf")
+    pred = predict_split(model, params, data.validation, data, denorm_mu=False, denorm_ab=False)
+    err_std_mu = jnp.mean((pred["y_mu"] - pred["y_pred_mu"]) ** 2, axis=1)
+    plot_validation_vs_radius(
+        data.validation["radii"],
+        err_std_mu,
+        ylabel="moment MSE (standardized)",
+        filename=f"{PLOT_DIR}{model_name}_err_std.pdf",
+    )
 
-    # unstandardized error
-    err = mse(model, params, data, normalize = False)
-    plot_validation_loss(data, err, xlabel = 'radius', ylabel = 'error', name = model_name + "_err.pdf")
-    
-    # print("## STATS ##")
-    # print(model_name, ", median R^2: ", jnp.median(r_squared(y, y_pred)))
-    # idxs = y_sigma.argsort()
-    # print(r_squared(y, y_pred)[idxs])
-    
-    save_predictions(model_name, data)
+    pred = predict_split(model, params, data.validation, data, denorm_mu=True, denorm_ab=True)
+    err = compute_errors(pred)
 
-def save_predictions(name, data):
-    model, _ = MODELS[name]()
-    params = load_model(name)
+    print(model_name, "validation mean MSE(mu):", float(jnp.mean(err["mu"])))
+    print(model_name, "validation mean MSE(ab):", float(jnp.mean(err["ab"])))
+    print(model_name, "validation median R^2(mu):", float(jnp.median(err["r2_mu"])))
 
-    x_std, y_std = get_features_targets(data["validation"])
-    y_mean, y_sigma = data["fourier_mean"], data["fourier_sd"]
-    y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std["fourier"])
-    y_ab = y_std["ab"]
-    y_pred_ab = y_pred["ab"]
-    y_pred_mu = denormalize(y_pred["mu"], y_mean, y_sigma)
-    y_mu = denormalize(y_std["mu"], y_mean, y_sigma)
+    plot_validation_vs_radius(
+        pred["radii"],
+        err["mu"],
+        ylabel="moment MSE",
+        filename=f"{PLOT_DIR}{model_name}_err.pdf",
+    )
 
     np.savez_compressed(
-        f"{name}_predictions.npz",
-        y_mu = y_mu,
-        y_ab = y_ab,
-        y_pred_mu = y_pred_mu,
-        y_pred_ab = y_pred_ab,
-        radii = data["validation"]["radii"],
-        corners = data["validation"]["corners"]
+        f"{PREDICTIONS_DIR}{model_name}.npz",
+        y_mu=np.asarray(pred["y_mu"]),
+        y_pred_mu=np.asarray(pred["y_pred_mu"]),
+        y_ab=np.asarray(pred["y_ab"]),
+        y_pred_ab=np.asarray(pred["y_pred_ab"]),
+        radii=np.asarray(pred["radii"]),
+        corners=np.asarray(pred["corners"]),
+        r2_mu=np.asarray(err["r2_mu"]),
     )
-    
-if __name__ == '__main__':
-    # simple baseline to test against
-    run_model(LINEAR_REGRESSION)
 
-    # small fcn
-    run_model(VANILLA)
 
-    # exploit context
-    run_model(CNN, use_scan = False)
+# ----------------------------
+# Run one model
+# ----------------------------
+def run_model(model_name, use_scan=True, ab_weight=1.0):
+    data = get_data()
+    model, params = make_model(model_name, data)
+    run_training_loop(model, params, data, model_name, use_scan=use_scan, ab_weight=ab_weight)
+    plot_loss(model_name)
+    validate(model, data, model_name)
+
+
+if __name__ == "__main__":
+    run_model(LINEAR_REGRESSION, use_scan=True, ab_weight=1.0)
+    run_model(VANILLA, use_scan=True, ab_weight=1.0)
+    run_model(CNN, use_scan=False, ab_weight=1.0)
