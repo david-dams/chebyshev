@@ -45,8 +45,8 @@ def split_data(features, targets):
     
     data = {
         "train" : [normalize(ft, features_mean, features_sd), normalize(tt, targets_mean, targets_sd)],
-        "targets_stats" : [targets_mean_train, targets_sd_train],
-        "features_stats" : [features_mean_train, features_sd_train],
+        "targets_stats" : [targets_mean, targets_sd],
+        "features_stats" : [features_mean, features_sd],
         "validation" : [fv, tv],
     }
     
