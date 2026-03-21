@@ -91,7 +91,7 @@ def denormalize(x, xm, xd):
     return x*(xd + 1e-8) + xm
 
 def get_features_targets(data):
-    return { "fourier" : data["fourier"] }, { "mu" : data["mu"], "ab" : data["ab"] }
+    return {"fourier" : data["fourier"] }, { "mu" : data["mu"], "ab" : data["ab"]}
 
 def split_data(features, targets, radii, corners, lower_limits, upper_limits):
     """split data randomly into training and validation set, returning dictionary with keys: train, validation and stats (mean, sd) of features and targets in training set to be used for inference"""
@@ -245,7 +245,7 @@ def make_cnn():
 MODELS = {CNN : make_cnn, MLP : make_mlp, LINEAR_REGRESSION : make_linear_regression}
 
 ## LOSS FUNCTION ##
-def make_cost_func(model, features, targets, l = 1.0, mean = True):
+def make_cost_func(model, features, targets, l = 1.0):
     """cost function (mean squared error)
 
     model :
@@ -264,20 +264,15 @@ def make_cost_func(model, features, targets, l = 1.0, mean = True):
 
             returns scalar: jnp.mean((y-y_pred)**2)
             """
-            pred = model.apply(params, x)
-            err_fourier = jnp.mean((y["fourier"]-pred["fourier"])**2)
+            pred = model.apply(params, x["fourier"])
+            err_mu = jnp.mean((y["mu"]-pred["mu"])**2)
             err_ab = jnp.mean((y["ab"]-pred["ab"])**2)                                   
-            return err_fourier + l * err_ab
+            return err_mu + l * err_ab
 
         # vectorization: F, T -> E, where dims: N x Nf, N x Nt -> N
         return jax.vmap(mse)(features, targets)
     
-    # for validation: compute per sample
-    func = mse_vec
-    
-    # for training: average over samples to produce scalar
-    if mean == True:
-        func = lambda p : jnp.mean(mse_vec(p))
+    func = lambda p : jnp.mean(mse_vec(p))
         
     return jax.jit(func)
 
@@ -329,6 +324,7 @@ def run_training_loop(model, params, features, targets, model_name, use_scan = T
         f = get_training_func(tx, loss_grad_fn)
         carry, loss_history = jax.lax.scan(f,
                                            (params, opt_state),
+                                           xs = None,
                                            length = NUM_STEPS)
         params, _ = carry
 
@@ -350,43 +346,51 @@ def r_squared(y, y_pred):
     ss_tot = y.var(axis = 0) + 1e-12
     return 1 - ss_res / ss_tot
 
-def validate(model, data, model_name):
-    x_std, y_std = get_features_targets(data["validation"])
-    x_mean, x_sigma = data["fourier_mean"], data["fourier_sd"]
-    x = denormalize(x_std, x_mean, x_sigma)
+def mse(model, params, data, normalize):
+    x, y = get_features_targets(data["validation"])
+    y_pred = jax.vmap(lambda x : model.apply(params, x))(x)
+
+    y_pred_mu = y_pred["mu"]
+    y_pred_ab = y_pred["ab"]    
+    y_mu = y["mu"]
+    y_ab = y["ab"]
     
-    # standardized error
-    params = load_model(model_name)        
-    loss = make_cost_func(model, x_std, y_std, mean = False)
-    loss_vals = loss(params)    
-    plt.xlabel("Structure size")
-    plt.ylabel("Validation loss (std)")
-    print(model_name, ", validation loss (std): ", jnp.mean(loss_vals))
-    plt.plot(x.sum(axis = 1), loss_vals)
-    plt.savefig(f"std_loss_validation_{model_name}.pdf")
+    if normalize == False:
+        y_mean, y_sigma = data["mu_mean"], data["mu_sd"]
+        y_pred_mu = denormalize(y_pred["mu"], y_mean, y_sigma)
+        y_mu = denormalize(y["mu"], y_mean, y_sigma)
+        
+    err_mu = jnp.mean((y_mu-pred_mu)**2)
+    err_ab = jnp.mean((y_ab-pred_ab)**2)                                   
+        
+    return {"mu" : err_mu, "ab" : err_ab}
+
+def plot_validation_loss(data, err, xlabel, ylabel, name):    
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    
+    print(name, {a : jnp.mean(b) for a, b in y.items()})
+    
+    plt.plot(data["radius"], err)
+    plt.savefig(name)
     plt.close()
+
+def validate(model, data, model_name):    
+    # standardized error
+    params = load_model(model_name)
+
+    err = mse(model, params, data, normalize = True)
+    plot_validation_loss(data, err, xlabel = 'radius', ylabel = 'error (std)', model_name + "_err_std.pdf")
 
     # unstandardized error
-    y_mean, y_sigma = data["mu_mean"], data["mu_sd"]
-    y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std)
+    err = mse(model, params, data, normalize = False)
+    plot_validation_loss(data, err, xlabel = 'radius', ylabel = 'error', model_name + "_err.pdf")
     
-    # denormalize
-    y_pred = denormalize(y_pred, y_mean, y_sigma)
-    y = denormalize(y_std, y_mean, y_sigma)
-
-    # average over chebyshev coefficients
-    loss_vals = jnp.mean((y - y_pred)**2, axis = 1)
-
-    plt.xlabel("Structure size")
-    plt.ylabel("Validation loss")    
-    print(model_name, ", validation loss: ", jnp.mean(loss_vals))
-    print(model_name, ", median R^2: ", jnp.median(r_squared(y, y_pred)))
-    idxs = y_sigma.argsort()
-    print(r_squared(y, y_pred)[idxs])
-    plt.plot(x.sum(axis = 1), loss_vals)
-    plt.savefig(f"loss_validation_{model_name}.pdf")
-    plt.close()
-
+    # print("## STATS ##")
+    # print(model_name, ", median R^2: ", jnp.median(r_squared(y, y_pred)))
+    # idxs = y_sigma.argsort()
+    # print(r_squared(y, y_pred)[idxs])
+    
     save_predictions(model_name, data)
 
 def save_predictions(name, data):
@@ -403,8 +407,8 @@ def save_predictions(name, data):
         f"{name}_predictions.npz",
         y = y,
         y_pred = y_pred,
-        radii = data["radii_validation"],
-        corners = data["corners_validation"]
+        radii = data["validation"]["radii"],
+        corners = data["validation"]["corners"]
     )
     
 if __name__ == '__main__':
