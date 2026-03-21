@@ -65,6 +65,9 @@ class Conv(nn.Module):
 def normalize(x, xm, xd):
     return (x-xm)/(xd + 1e-8)
 
+def denormalize(x, xm, xd):
+    return x*(xd + 1e-8) + xm
+
 def split_data(features, targets):
     """split data randomly into training and validation set, returning dictionary with keys: train, validation and stats (mean, sd) of features and targets in training set to be used for inference"""
     features = jnp.array(features)
@@ -84,9 +87,9 @@ def split_data(features, targets):
 
     data = {
         "train" : [normalize(ft, features_mean, features_sd), normalize(tt, targets_mean, targets_sd)],
+        "validation" : [normalize(fv, features_mean, features_sd), normalize(tv, targets_mean, targets_sd)],
         "targets_stats" : [targets_mean, targets_sd],
         "features_stats" : [features_mean, features_sd],
-        "validation" : [normalize(fv, features_mean, features_sd), normalize(tv, targets_mean, targets_sd)],
     }
     
     return data
@@ -284,32 +287,51 @@ def run_training_loop(model, params, features, targets, model_name):
 
     opt_state = tx.init(params)
 
-    loss_history = []
-
-    # TODO: JIT
+    # scan JITs => speeds up training
+    def training_func(params, loss):
+        loss_val, grads = loss_grad_fn(params)
+        updates, opt_state = tx.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
+        return params, loss_val
     
-    # Minimizes the loss.
-    for _ in range(NUM_STEPS):
-      # Computes gradient of the loss.
-      loss_val, grads = loss_grad_fn(params)
-      loss_history.append(loss_val)
-      # Updates the optimizer state, creates an update to the params.
-      updates, opt_state = tx.update(grads, opt_state)
-      # Updates the parameters.
-      params = optax.apply_updates(params, updates)
-
+    params, loss_history = jax.lax.scan(training_func,
+                                        params,
+                                        length = NUM_STEPS)
+    
     save_model(params, model_name)
     save_loss(loss_history, model_name)
     
 ## GENERIC VALIDATION ##
 def validate(model, features, targets, model_name):
+    # standardized error
     params = load_model(model_name)        
     loss = make_cost_func(model, features, targets, mean = False)
-    loss_vals = loss(params)
+    loss_vals = loss(params)    
+    plt.xlabel("Structure size")
+    plt.ylabel("Validation loss (std)")
+    print(model_name, ", validation loss (std): ", jnp.mean(loss_vals))
+    plt.plot(features.sum(axis =  1), loss_vals)
+    plt.savefig(f"std_loss_validation_{model_name}.pdf")
+    plt.close()
+
+    # unstandardized error
+    data = get_data()
+    y_mean, y_sd = data["targets_stats"]
+    x_mean, x_sd = data["features_stats"]
+    x = features
+    y_pred = jax.vmap(lambda x : model.apply(params, x))(x)
+    
+    # denormalize
+    y_pred = denormalize(y_pred, y_mean, y_sd)
+    y = denormalize(targets, y_mean, y_sd)
+
+    # average over chebyshev coefficients
+    loss_vals = jnp.mean((y - y_pred)**2, axis = 1)
+
     plt.xlabel("Structure size")
     plt.ylabel("Validation loss")
     print(model_name, ", validation loss: ", jnp.mean(loss_vals))
-    plt.plot(np.arange(loss_vals.size), loss_vals)
+    plt.plot(features.sum(axis =  1), loss_vals)
     plt.savefig(f"loss_validation_{model_name}.pdf")
     plt.close()
 
