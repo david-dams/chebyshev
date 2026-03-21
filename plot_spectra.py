@@ -1,110 +1,182 @@
-import kwant
 import numpy as np
-from numpy.polynomial.chebyshev import chebval
 import matplotlib.pyplot as plt
+from numpy.polynomial.chebyshev import chebval
 
-from generate_data import get_system, get_grid
+from train_new import PLOT_DIR, PREDICTIONS_DIR
+USE_PRED_AB = False
 
-def get_spectrum(s, energy, moments):
-    energy = np.asarray(energy)
-    e = (energy - s._b) / s._a
-    g_e = (np.pi * np.sqrt(1 - e) * np.sqrt(1 + e))
+def reconstruct_spectrum(energy, moments, a, b):
+    """
+    Reconstruct DOS from Chebyshev moments on a physical energy grid.
 
-    # factor 2 comes from the norm of the Chebyshev polynomials
-    moments[1:] = 2 * moments[1:]
+    Parameters
+    ----------
+    energy : (M,) array
+        Physical energy values.
+    moments : (N,) array
+        Chebyshev moments mu_n.
+    a, b : float
+        Rescaling parameters so that x = (E - b)/a lies in [-1, 1].
 
-    return np.transpose(chebval(e, moments) / g_e)
+    Returns
+    -------
+    rho : (M,) array
+        Reconstructed density of states.
+    """
+    energy = np.asarray(energy, dtype=float)
+    mu = np.array(moments, dtype=float, copy=True)
 
-def get_predictions(name, n_samples = None):
-    data = np.load(f"{name}_predictions.npz")
-    
-    y = data["y"]
-    y_pred = data["y_pred"]
+    x = (energy - b) / a
+    inside = np.abs(x) < 1.0
+
+    rho = np.full_like(x, np.nan, dtype=float)
+    if not np.any(inside):
+        return rho
+
+    mu[1:] *= 2.0
+    denom = np.pi * np.sqrt(np.clip(1.0 - x[inside] ** 2, 1e-15, None))
+    rho[inside] = chebval(x[inside], mu) / denom
+    return rho
+
+
+def get_predictions(name, n_samples=None, seed=0):
+    data = np.load(f"{PREDICTIONS_DIR}/{name}.npz")
+
+    y_mu = data["y_mu"]
+    y_pred_mu = data["y_pred_mu"]
+    y_ab = data["y_ab"]
+    y_pred_ab = data["y_pred_ab"]
     radii = data["radii"]
     corners = data["corners"]
 
-    # randomly plot some spectra
     if n_samples is not None:
-        np.random.seed(0)    
-        idxs = np.random.choice(y.shape[0], N_SAMPLES)
-    # sort by size
+        rng = np.random.default_rng(seed)
+        n_samples = min(n_samples, y_mu.shape[0])
+        idxs = rng.choice(y_mu.shape[0], size=n_samples, replace=False)
     else:
-        idxs = radii.argsort()        
+        idxs = np.argsort(radii)
 
-    return y[idxs], y_pred[idxs], radii[idxs], corners[idxs]
+    return (
+        y_mu[idxs],
+        y_pred_mu[idxs],
+        y_ab[idxs],
+        y_pred_ab[idxs],
+        radii[idxs],
+        corners[idxs],
+    )
 
-def maybe_to_int(n):
-    if n == np.inf:
-        return n
-    return int(n)
 
-def plot_predictions(name):
-    
-    y, y_pred, radii, corners = get_predictions(name, n_samples = 4)
+def common_energy_grid(ab, ab_pred=None, n_energy=400, pad=0.98):
+    """
+    Build a common energy grid from a collection of [a,b] pairs.
 
-    fig, ax = plt.subplots(1,1)
-    for i, r in enumerate(radii):        
-        fsyst = get_system(float(r), maybe_to_int(corners[i]))     
-        spectrum = kwant.kpm.SpectralDensity(fsyst)
+    pad < 1 avoids evaluating exactly at the Chebyshev singular endpoints.
+    """
+    pairs = [ab]
+    if ab_pred is not None:
+        pairs.append(ab_pred)
 
-        # sample energies from analytical reference
-        energies = spectrum.energies
-        # energies, densities = spectrum()
-        # plt.plot(spectrum.energies, densities.real)
+    all_ab = np.concatenate(pairs, axis=0)
+    a_all = all_ab[:, 0]
+    b_all = all_ab[:, 1]
 
-        # TODO: there are some slight deviations between ref and analytical => probably float stuff from loading
-        # sanity check: these we saved and should give the same results as the reference
-        densities_ref = get_spectrum(spectrum, energies, y[i])
-        plt.plot(energies, densities_ref.real, '.-')
-        
-        # prediction
-        densities_pred = get_spectrum(spectrum, energies, y_pred[i])
-        ax.plot(energies, densities_pred.real, '--')
+    e_min = np.min(b_all - pad * np.abs(a_all))
+    e_max = np.max(b_all + pad * np.abs(a_all))
+    return np.linspace(e_min, e_max, n_energy)
 
-    plt.savefig(f"{name}.pdf")
 
-def plot_predictions_2d(name):
-    
-    y, y_pred, radii, corners = get_predictions(name)
+def plot_predictions(name, n_samples=4, use_pred_ab=False, n_energy=400):
+    y_mu, y_pred_mu, y_ab, y_pred_ab, radii, corners = get_predictions(name, n_samples=n_samples)
 
-    spectra_ref, spectra_pred = [], []
+    energy = common_energy_grid(y_ab, y_pred_ab, n_energy=n_energy)
 
-    for i, r in enumerate(radii):        
-        fsyst = get_system(float(r), maybe_to_int(corners[i]))     
-        spectrum = kwant.kpm.SpectralDensity(fsyst)
-        
-        energies = spectrum.energies
-        
-        densities_ref = get_spectrum(spectrum, energies, y[i])
-        densities_pred = get_spectrum(spectrum, energies, y_pred[i])
+    fig, ax = plt.subplots(figsize=(7, 4))
 
-        spectra_ref.append(densities_ref)
-        spectra_pred.append(densities_pred)
-        
-    fig, axs = plt.subplots(1, 2)
+    for i in range(len(radii)):
+        a_ref, b_ref = y_ab[i]
+        rho_ref = reconstruct_spectrum(energy, y_mu[i], a_ref, b_ref)
 
-    im0 = axs[0].matshow(spectra_ref)
-    axs[0].set_xlabel(r"$E$")
-    axs[0].set_ylabel(r"$r (nm)$")
-    axs[0].set_aspect("equal")
+        if use_pred_ab:
+            a_pred, b_pred = y_pred_ab[i]
+        else:
+            a_pred, b_pred = y_ab[i]
+
+        rho_pred = reconstruct_spectrum(energy, y_pred_mu[i], a_pred, b_pred)
+
+        label_ref = f"ref r={radii[i]:.2f}, n={corners[i]}"
+        label_pred = f"pred r={radii[i]:.2f}, n={corners[i]}"
+
+        ax.plot(energy, rho_ref, "-", linewidth=1.5, label=label_ref)
+        ax.plot(energy, rho_pred, "--", linewidth=1.5, label=label_pred)
+
+    ax.set_xlabel("E")
+    ax.set_ylabel("DOS")
+    ax.legend(fontsize=7, ncol=2)
+    fig.tight_layout()
+    fig.savefig(f"{PLOT_DIR}/prediction_{name}.pdf")
+    plt.close(fig)
+
+
+def plot_predictions_2d(name, use_pred_ab=False, n_energy=400):
+    y_mu, y_pred_mu, y_ab, y_pred_ab, radii, corners = get_predictions(name, n_samples=None)
+
+    energy = common_energy_grid(y_ab, y_pred_ab, n_energy=n_energy)
+
+    spectra_ref = []
+    spectra_pred = []
+
+    for i in range(len(radii)):
+        a_ref, b_ref = y_ab[i]
+        rho_ref = reconstruct_spectrum(energy, y_mu[i], a_ref, b_ref)
+
+        if use_pred_ab:
+            a_pred, b_pred = y_pred_ab[i]
+        else:
+            a_pred, b_pred = y_ab[i]
+
+        rho_pred = reconstruct_spectrum(energy, y_pred_mu[i], a_pred, b_pred)
+
+        spectra_ref.append(rho_ref)
+        spectra_pred.append(rho_pred)
+
+    spectra_ref = np.stack(spectra_ref, axis=0)
+    spectra_pred = np.stack(spectra_pred, axis=0)
+
+    extent = [energy[0], energy[-1], 0, len(radii) - 1]
+
+    fig, axs = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+
+    im0 = axs[0].imshow(
+        spectra_ref,
+        aspect="auto",
+        origin="lower",
+        extent=extent,
+    )
+    axs[0].set_title("Reference")
+    axs[0].set_xlabel("E")
+    axs[0].set_ylabel("sample index")
     fig.colorbar(im0, ax=axs[0])
 
-    im1 = axs[1].matshow(spectra_pred)
-    axs[1].set_xlabel(r"$E$")
-    axs[1].set_ylabel(r"$r (nm)$")
-    axs[1].set_aspect("equal")
+    im1 = axs[1].imshow(
+        spectra_pred,
+        aspect="auto",
+        origin="lower",
+        extent=extent,
+    )
+    axs[1].set_title("Prediction")
+    axs[1].set_xlabel("E")
+    axs[1].set_ylabel("sample index")
     fig.colorbar(im1, ax=axs[1])
 
-    plt.tight_layout()
+    fig.savefig(f"{PLOT_DIR}/2d_{name}.pdf")
+    plt.close(fig)
 
 
-    plt.savefig(f"2d_{name}.pdf")
-    
 if __name__ == "__main__":
-    # plot_predictions("cnn")    
-    # plot_predictions("linear_regression")    
-    # plot_predictions("mlp")    
+    plot_predictions("cnn", n_samples=4, use_pred_ab=USE_PRED_AB)
+    plot_predictions("linear_regression", n_samples=4, use_pred_ab=USE_PRED_AB)
+    plot_predictions("mlp", n_samples=4, use_pred_ab=USE_PRED_AB)
 
-    plot_predictions_2d("cnn")    
-    plot_predictions_2d("linear_regression")    
-    plot_predictions_2d("mlp")    
+    plot_predictions_2d("cnn", use_pred_ab=USE_PRED_AB)
+    plot_predictions_2d("linear_regression", use_pred_ab=USE_PRED_AB)
+    plot_predictions_2d("mlp", use_pred_ab=USE_PRED_AB)
