@@ -233,7 +233,7 @@ def make_cnn():
     
     features, targets = get_features_targets(data["train"])
     n_out = targets["mu"].shape[-1]
-    n_in = features.shape[1]
+    n_in = features["fourier"].shape[1]
     
     model = Conv(n_out = n_out)    
 
