@@ -369,7 +369,7 @@ def plot_validation_loss(data, err, xlabel, ylabel, name):
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     
-    print(name, {a : jnp.mean(b) for a, b in y.items()})
+    print(name, {a : jnp.mean(b) for a, b in err.items()})
     
     plt.plot(data["radius"], err)
     plt.savefig(name)
