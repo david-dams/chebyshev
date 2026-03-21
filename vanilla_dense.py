@@ -60,6 +60,57 @@ class Conv(nn.Module):
         x = nn.Dense(features=self.n_out, name='dense1')(x)
 
         return x[0]
+
+class ConvImproved(nn.Module):
+    n_out: int
+    width: int = 32
+    dropout: float = 0.0  # set e.g. 0.1 if you wire train/rng
+
+    @nn.compact
+    def __call__(self, x, train: bool = False):
+        # x: (L,)  -> make (B=1, L, C=1)
+        x = x[None, :, None]
+
+        def conv_block(x, features, k=(5,), stride=(1,), name=""):
+            y = nn.Conv(features, kernel_size=k, strides=stride, padding="SAME",
+                        use_bias=False, name=f"{name}_conv")(x)
+            y = nn.LayerNorm(axis=-1, name=f"{name}_ln")(y)
+            y = nn.gelu(y)
+            return y
+
+        def res_block(x, features, name=""):
+            y = conv_block(x, features, k=(3,), stride=(1,), name=f"{name}_a")
+            y = conv_block(y, features, k=(3,), stride=(1,), name=f"{name}_b")
+            # if channels mismatch, project
+            if x.shape[-1] != features:
+                x = nn.Conv(features, kernel_size=(1,), padding="SAME",
+                            use_bias=False, name=f"{name}_proj")(x)
+            return x + y
+
+        # Stem (wider kernel helps on spectral sequences)
+        x = conv_block(x, self.width, k=(7,), stride=(2,), name="stem")  # downsample /2
+
+        # Residual stages
+        x = res_block(x, self.width, name="res1")
+        x = res_block(x, self.width, name="res2")
+
+        x = conv_block(x, self.width * 2, k=(5,), stride=(2,), name="down1")  # /2 again
+        x = res_block(x, self.width * 2, name="res3")
+        x = res_block(x, self.width * 2, name="res4")
+
+        # Global average pool over length axis -> (1, C)
+        x = x.mean(axis=1)
+
+        # Small head
+        x = nn.Dense(self.width * 2, name="head_dense")(x)
+        x = nn.gelu(x)
+        if self.dropout > 0:
+            x = nn.Dropout(rate=self.dropout, name="head_drop")(x, deterministic=not train)
+
+        x = nn.Dense(self.n_out, name="out")(x)
+
+        return x[0]  # (n_out,)
+
     
 ## DATA PREPARATION ##
 def normalize(x, xm, xd):
@@ -193,6 +244,21 @@ def make_cnn():
     
     return model, params
 
+def make_cnn_impr():
+    data = get_data()
+    
+    features, targets = data["train"]
+    n_out = targets.shape[-1]
+    n_in = features.shape[1]
+    
+    model = ConvImproved(n_out = n_out)    
+
+    # parameters
+    params = model.init(params_rng, jnp.ones((n_in,), dtype=jnp.float32))
+    
+    return model, params
+
+
 ## LOSS FUNCTION ##
 def make_cost_func(model, features, targets, mean = True):
     """cost function (mean squared error)
@@ -257,6 +323,20 @@ def run_cnn():
     model_name = "cnn"
     
     model, params = make_cnn()
+    data = get_data()
+    features, targets = data["train"]
+
+    # TODO: for whatever reason, JIT in scan is slower than plain Python (at least on CPU)
+    run_training_loop(model, params, features, targets, model_name, use_scan = False)    
+    plot_loss(model_name)
+
+    validate(model, data, model_name)        
+
+
+def run_cnn_impr():
+    model_name = "cnn_impr"
+    
+    model, params = make_cnn_impr()
     data = get_data()
     features, targets = data["train"]
 
@@ -351,13 +431,15 @@ def validate(model, data, model_name):
     loss_vals = jnp.mean((y - y_pred)**2, axis = 1)
 
     plt.xlabel("Structure size")
-    plt.ylabel("Validation loss")
+    plt.ylabel("Validation loss")    
     print(model_name, ", validation loss: ", jnp.mean(loss_vals))
-    print(model_name, ", median R^2: ", jnp.median(r_squared(y, y_pred)) )
+    print(model_name, ", median R^2: ", jnp.median(r_squared(y, y_pred)))
+    idxs = y_sigma.argsort()
+    print(r_squared(y, y_pred)[idxs])
     plt.plot(x.sum(axis = 1), loss_vals)
     plt.savefig(f"loss_validation_{model_name}.pdf")
     plt.close()
-
+ 
 if __name__ == '__main__':
     # simple baseline to test against
     run_linear_regression()
