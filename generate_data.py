@@ -1,16 +1,20 @@
+import os
+import itertools
 import kwant
 import numpy as np
 from numpy.fft import fft
-import itertools
 import shapely
 import matplotlib.pyplot as plt
 
 R_MIN = 2
 R_MAX = 200
 R_STEPS = 500
-N_MIN = 12
+N_MIN = 3
 N_MAX = 40
 MAX_FEATURES = 100
+
+COEFFICIENTS_PATH="coefficients"
+REGENERATE_DATA=False
 
 # visual tests
 def _plot_boundary(fsyst):
@@ -62,14 +66,8 @@ def get_system(r : float, n : int):
 
     return fsyst
 
-def safe_key(r: float, n: int) -> str:
-    return f"r_{r:.6f}_n_{n}".replace(".", "p")
-
-def get_radius_n_from_safe_key(k : str) -> str:
-    _, r, _, n = k.split("_")
-    r = float(r.replace("p", "."))
-    n = int(n.split("p")[0])    
-    return r, n
+def coefficients_file(r: float, n: int) -> str:
+    return f"{COEFFICIENTS_PATH}/r_{r:.6f}_n_{n}".replace(".", "p")
 
 def get_grid(n_min = N_MIN, n_max = N_MAX):
     corners = np.append(np.arange(n_min, n_max + 1), np.inf)
@@ -78,13 +76,17 @@ def get_grid(n_min = N_MIN, n_max = N_MAX):
 
 def generate_data():
     for r, n in get_grid():
+        fname = f"{coefficients_file(r, n)}.npz"
+        if not REGENERATE_DATA and fname.split("/")[1] in os.listdir(COEFFICIENTS_PATH):
+            continue            
+        
         fsyst = get_system(r, n)
-
+        
         pos = get_boundary_positions(fsyst)        
         print(f"System with {fsyst.graph.num_nodes} atoms and r, n = {r, n}.")        
         moments, a, b = get_moments_limits(fsyst)
 
-        fname = f"{safe_key(r, n)}.npz"
+
         np.savez_compressed(
             fname,
             r=np.array(r),
@@ -93,6 +95,11 @@ def generate_data():
             a = a,
             b = b
         )
+
+def radius_n_from_coefficients_file(fname):
+    radius = float(fname.split(".")[0].split("_")[1].replace("p", "."))
+    n = float(fname.split(".")[0].split("_")[3].split('p')[0])
+    return radius, n
 
 def extract_features():
     training_name = "training.npz"
@@ -109,45 +116,41 @@ def extract_features():
         if diff > 0:
             return np.pad(signal, (0, diff))
         return signal[:MAX_FEATURES]
-    
-    for radius, n in get_grid(3, 40):
-        fname = f"{safe_key(radius, n)}.npz"
 
-        try:
-            data = np.load(fname)        
-
-            # circular order of positions
-            pos = data["pos"]
-            c = pos.mean(axis=0)
-            pos = pos -  c
-            # _plot_corner_order(pos)
-            ang = np.arctan2(pos[:,1], pos[:,0])
-            pos = pos[np.argsort(ang)]
-            # _plot_corner_order(pos)            
-            
-            # ft defined with 1/N as in https://pages.hmc.edu/ruye/e161/lectures/fd/node1.html vs https://numpy.org/doc/stable/reference/routines.fft.html#implementation-details        
-            enc = fft(pos[:, 0] + 1j*pos[:, 1], axis = 0) / pos.shape[0]
-            
-            # rotation invariance => take absolute value
-            r = np.abs(enc)
-
-            # position invariance => drop k = 0
-            r = r[1:]
-            
-            # if r.size > MAX_FEATURES => truncate, else: pad
-            r = pad(r)
-                        
-            features.append(r)
-            moments.append(data["moments"])
-            names.append(fname)
-            radii.append(radius)
-            corners.append(n)
-            lower_limits.append(data["a"])
-            upper_limits.append(data["b"])
-            
-        except FileNotFoundError:
-            pass
+    for fname in filter(lambda x : "npz" in x, os.listdir(COEFFICIENTS_PATH)):
+        radius, n = radius_n_from_coefficients_file(fname)
         
+        data = np.load(f"{COEFFICIENTS_PATH}/{fname}")        
+
+        # circular order of positions
+        pos = data["pos"]
+        c = pos.mean(axis=0)
+        pos = pos -  c
+        # _plot_corner_order(pos)
+        ang = np.arctan2(pos[:,1], pos[:,0])
+        pos = pos[np.argsort(ang)]
+        # _plot_corner_order(pos)            
+
+        # ft defined with 1/N as in https://pages.hmc.edu/ruye/e161/lectures/fd/node1.html vs https://numpy.org/doc/stable/reference/routines.fft.html#implementation-details        
+        enc = fft(pos[:, 0] + 1j*pos[:, 1], axis = 0) / pos.shape[0]
+
+        # rotation invariance => take absolute value
+        r = np.abs(enc)
+
+        # position invariance => drop k = 0
+        r = r[1:]
+
+        # if r.size > MAX_FEATURES => truncate, else: pad
+        r = pad(r)
+
+        features.append(r)
+        moments.append(data["moments"])
+        names.append(fname)
+        radii.append(radius)
+        corners.append(n)
+        lower_limits.append(data["a"])
+        upper_limits.append(data["b"])
+                    
     np.savez_compressed(
         training_name,
         features = features,
