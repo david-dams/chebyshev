@@ -279,7 +279,7 @@ def run_training_loop(model, params, features, targets, model_name):
         loss_val, grads = loss_grad_fn(params)
         updates, opt_state = tx.update(grads, opt_state)
         params = optax.apply_updates(params, updates)
-        return params, loss_val
+        return (params, opt_state), loss_val
     
     loss = make_cost_func(model, features, targets)
 
