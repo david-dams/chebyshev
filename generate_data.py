@@ -106,8 +106,8 @@ def extract_features():
             return np.pad(signal, (0, diff))
         return signal[:MAX_FEATURES]
     
-    for r, n in get_grid(3, 40):
-        fname = f"{safe_key(r, n)}.npz"
+    for radius, n in get_grid(3, 40):
+        fname = f"{safe_key(radius, n)}.npz"
 
         try:
             data = np.load(fname)        
@@ -136,7 +136,7 @@ def extract_features():
             features.append(r)
             moments.append(data["moments"])
             names.append(fname)
-            radii.append(r)
+            radii.append(radius)
             corners.append(n)
             
         except FileNotFoundError:
