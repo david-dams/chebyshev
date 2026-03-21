@@ -17,7 +17,7 @@ PARAMS_DIR = "./"
 # TRAINING_SET_PERCENTAGE = .6
 
 LEARNING_RATE = 1e-2
-NUM_STEPS = 500
+NUM_STEPS = 2000
 TRAINING_SET_PERCENTAGE = .8
 
 MAX_FEATURES = 100
@@ -38,7 +38,7 @@ def split_data(features, targets):
     validation_idxs = permutation[n_training_samples:]
 
     ft, tt = features[training_idxs], targets[training_idxs]
-    fv, tv= features[validation_idxs], targets[validation_idxs]
+    fv, tv = features[validation_idxs], targets[validation_idxs]
     targets_mean, targets_sd = jnp.mean(tt, axis = 0), jnp.std(tt, axis = 0)
     features_mean, features_sd = jnp.mean(ft, axis = 0), jnp.std(ft, axis = 0)
     
