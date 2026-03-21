@@ -74,7 +74,7 @@ class ConvImproved(nn.Module):
         def conv_block(x, features, k=(5,), stride=(1,), name=""):
             y = nn.Conv(features, kernel_size=k, strides=stride, padding="SAME",
                         use_bias=False, name=f"{name}_conv")(x)
-            y = nn.LayerNorm(axis=-1, name=f"{name}_ln")(y)
+            y = nn.LayerNorm(name=f"{name}_ln")(y)
             y = nn.gelu(y)
             return y
 
@@ -441,12 +441,12 @@ def validate(model, data, model_name):
     plt.close()
  
 if __name__ == '__main__':
-    # simple baseline to test against
-    run_linear_regression()
+    # # simple baseline to test against
+    # run_linear_regression()
 
-    # small fcn
-    run_mlp()
+    # # small fcn
+    # run_mlp()
 
-    # exploit context
-    run_cnn()
+    # # exploit context
+    # run_cnn()
     run_cnn_impr()
