@@ -89,7 +89,10 @@ def extract_features():
         
         try:
             data = np.load(fname)
-            features.append(fft(data["pos"])[:MAX_FEATURES])
+            trafo = fft(data["pos"])[:MAX_FEATURES]
+            diff = MAX_FEATURES - trafo.size
+            trafo_padded = np.pad(trafo, (0, diff)) 
+            features.append(trafo_padded)
             moments.append(data["moments"])
             names.append(fname)            
             
