@@ -199,7 +199,7 @@ def make_cnn():
     
     return model, params
 
-MODELS = {"cnn" : make_cnn, "mlp" : make_mlp, "linear" : make_linear_regression}
+MODELS = {"cnn" : make_cnn, "mlp" : make_mlp, "linear_regression" : make_linear_regression}
 
 ## LOSS FUNCTION ##
 def make_cost_func(model, features, targets, mean = True):
