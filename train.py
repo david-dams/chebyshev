@@ -360,8 +360,8 @@ def mse(model, params, data, normalize):
         y_pred_mu = denormalize(y_pred["mu"], y_mean, y_sigma)
         y_mu = denormalize(y["mu"], y_mean, y_sigma)
         
-    err_mu = jnp.mean((y_mu-y_pred_mu)**2)
-    err_ab = jnp.mean((y_ab-y_pred_ab)**2)                                   
+    err_mu = jnp.mean((y_mu-y_pred_mu)**2, axis = 1)
+    err_ab = jnp.mean((y_ab-y_pred_ab)**2, axis = 1)                                   
         
     return {"mu" : err_mu, "ab" : err_ab}
 
@@ -371,7 +371,7 @@ def plot_validation_loss(data, err, xlabel, ylabel, name):
     
     print(name, {a : jnp.mean(b) for a, b in err.items()})
     
-    plt.plot(data["validation"]["radii"], err)
+    plt.plot(data["validation"]["radii"], err["mu"])
     plt.savefig(name)
     plt.close()
 
@@ -400,13 +400,17 @@ def save_predictions(name, data):
     x_std, y_std = get_features_targets(data["validation"])
     y_mean, y_sigma = data["fourier_mean"], data["fourier_sd"]
     y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std["fourier"])
-    y_pred = denormalize(y_pred, y_mean, y_sigma)
-    y = denormalize(y_std, y_mean, y_sigma)
+    y_ab = y_std["ab"]
+    y_pred_ab = y_pred["ab"]
+    y_pred_mu = denormalize(y_pred["mu"], y_mean, y_sigma)
+    y_mu = denormalize(y_std["mu"], y_mean, y_sigma)
 
     np.savez_compressed(
         f"{name}_predictions.npz",
-        y = y,
-        y_pred = y_pred,
+        y_mu = y_mu,
+        y_ab = y_ab,
+        y_pred_mu = y_pred_mu,
+        y_pred_ab = y_pred_ab,
         radii = data["validation"]["radii"],
         corners = data["validation"]["corners"]
     )
