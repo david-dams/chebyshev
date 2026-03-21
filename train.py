@@ -60,57 +60,6 @@ class Conv(nn.Module):
         x = nn.Dense(features=self.n_out, name='dense1')(x)
 
         return x[0]
-
-class ConvImproved(nn.Module):
-    n_out: int
-    width: int = 32
-    dropout: float = 0.0  # set e.g. 0.1 if you wire train/rng
-
-    @nn.compact
-    def __call__(self, x, train: bool = False):
-        # x: (L,)  -> make (B=1, L, C=1)
-        x = x[None, :, None]
-
-        def conv_block(x, features, k=(5,), stride=(1,), name=""):
-            y = nn.Conv(features, kernel_size=k, strides=stride, padding="SAME",
-                        use_bias=False, name=f"{name}_conv")(x)
-            y = nn.LayerNorm(name=f"{name}_ln")(y)
-            y = nn.gelu(y)
-            return y
-
-        def res_block(x, features, name=""):
-            y = conv_block(x, features, k=(3,), stride=(1,), name=f"{name}_a")
-            y = conv_block(y, features, k=(3,), stride=(1,), name=f"{name}_b")
-            # if channels mismatch, project
-            if x.shape[-1] != features:
-                x = nn.Conv(features, kernel_size=(1,), padding="SAME",
-                            use_bias=False, name=f"{name}_proj")(x)
-            return x + y
-
-        # Stem (wider kernel helps on spectral sequences)
-        x = conv_block(x, self.width, k=(7,), stride=(2,), name="stem")  # downsample /2
-
-        # Residual stages
-        x = res_block(x, self.width, name="res1")
-        x = res_block(x, self.width, name="res2")
-
-        x = conv_block(x, self.width * 2, k=(5,), stride=(2,), name="down1")  # /2 again
-        x = res_block(x, self.width * 2, name="res3")
-        x = res_block(x, self.width * 2, name="res4")
-
-        # Global average pool over length axis -> (1, C)
-        x = x.mean(axis=1)
-
-        # Small head
-        x = nn.Dense(self.width * 2, name="head_dense")(x)
-        x = nn.gelu(x)
-        if self.dropout > 0:
-            x = nn.Dropout(rate=self.dropout, name="head_drop")(x, deterministic=not train)
-
-        x = nn.Dense(self.n_out, name="out")(x)
-
-        return x[0]  # (n_out,)
-
     
 ## DATA PREPARATION ##
 def normalize(x, xm, xd):
@@ -397,6 +346,21 @@ def run_training_loop(model, params, features, targets, model_name, use_scan = T
     save_loss(loss_history, model_name)
     
 ## GENERIC VALIDATION ##
+def predict(model, data):
+
+    x_std, y_std = data["validation"]
+    x_mean, x_sigma = data["features_stats"]
+
+    # unstandardized error
+    y_mean, y_sigma = data["targets_stats"]
+    y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std)
+    
+    # denormalize
+    y_pred = denormalize(y_pred, y_mean, y_sigma)
+    y = denormalize(y_std, y_mean, y_sigma)
+
+    return
+
 def r_squared(y, y_pred):
     """R^2 per chebyshev coefficient"""
     ss_res =  ((y-y_pred)**2).mean(axis = 0)
@@ -442,11 +406,10 @@ def validate(model, data, model_name):
  
 if __name__ == '__main__':
     # # simple baseline to test against
-    # run_linear_regression()
+    run_linear_regression()
 
     # # small fcn
-    # run_mlp()
+    run_mlp()
 
     # # exploit context
-    # run_cnn()
-    run_cnn_impr()
+    run_cnn()
