@@ -60,8 +60,6 @@ class Conv(nn.Module):
         x = nn.Dense(features=self.n_out, name='dense1')(x)
 
         return x[0]
-
-MODELS = {"cnn" : make_cnn, "mlp" : make_mlp, "linear" : make_linear_regression}
     
 ## DATA PREPARATION ##
 def normalize(x, xm, xd):
@@ -201,6 +199,7 @@ def make_cnn():
     
     return model, params
 
+MODELS = {"cnn" : make_cnn, "mlp" : make_mlp, "linear" : make_linear_regression}
 
 ## LOSS FUNCTION ##
 def make_cost_func(model, features, targets, mean = True):
