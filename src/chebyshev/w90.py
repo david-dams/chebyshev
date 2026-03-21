@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import re
-from collections import OrderedDict
 from pathlib import Path
 from typing import Callable
 
@@ -26,14 +25,15 @@ class Wannier90ToKwant:
     abs_hamiltonian_cutoff
         Matrix elements with abs(value) < cutoff are dropped
     rel_cutoff
-        if `abs_hamiltonian_cutoff` is None, set abs_hamiltonian_cutoff as rel_cutoff * MAX_ABS_VALUE
+        if `abs_hamiltonian_cutoff` is None, set abs_hamiltonian_cutoff as
+        rel_cutoff * MAX_ABS_VALUE
 
     Main public attributes
     ----------------------
     atom_list
-        List[(atom_type, rounded_cartesian_pos)]
+        List[(atom_type, cartesian_pos)]
     wannier_list
-        List[rounded_cartesian_pos], one per Wannier function, in file order
+        List[cartesian_pos], one per Wannier function, in file order
     lattice_vectors
         Full 3x3 lattice-vector matrix from the .wout
     prim_vec
@@ -41,9 +41,13 @@ class Wannier90ToKwant:
     ham_dict
         Dict[R_tuple, matrix], where R_tuple has length n
     lattice
-        kwant.lattice.Polyatomic lattice
+        kwant.lattice.Polyatomic lattice for Wannier orbitals
+    atomic_lattice
+        kwant.lattice.Polyatomic lattice for atomic positions
     system
-        Last Kwant Builder created by to_kwant_system()
+        Last Wannier Kwant system created
+    atomic_system
+        Last atomic dummy system created
     """
 
     def __init__(
@@ -52,22 +56,24 @@ class Wannier90ToKwant:
         hr_path: str | Path,
         n: int,
         abs_hamiltonian_cutoff: float | None = None,
-        rel_cutoff : float | None = None,
+        rel_cutoff: float | None = None,
     ) -> None:
         if n not in (1, 2, 3):
             raise ValueError(f"`n` must be 1, 2, or 3, got {n}.")
 
         self.wout_path = Path(wout_path)
         self.hr_path = Path(hr_path)
-        self.n = n        
+        self.n = n
         self.abs_hamiltonian_cutoff = abs_hamiltonian_cutoff
         self.rel_cutoff = rel_cutoff
-        if self.abs_hamiltonian_cutoff is None:
-            if self.rel_cutoff is None:
-                raise ValueError("Relative cutoff must be provided if absolute is unused.")
 
-        self.atom_list: list[tuple[str, tuple[float, ...]]] = []
-        self.wannier_list: list[tuple[float, ...]] = []
+        if self.abs_hamiltonian_cutoff is None and self.rel_cutoff is None:
+            raise ValueError(
+                "Either `abs_hamiltonian_cutoff` or `rel_cutoff` must be provided."
+            )
+
+        self.atom_list: list[tuple[str, np.ndarray]] = []
+        self.wannier_list: list[np.ndarray] = []
         self.lattice_vectors: np.ndarray | None = None
         self.prim_vec: np.ndarray | None = None
         self.ham_dict: dict[tuple[int, ...], np.ndarray] = {}
@@ -80,9 +86,18 @@ class Wannier90ToKwant:
 
         self._parse_wout()
         self._parse_hr()
-        
-        self.lattice = self._build_polyatomic_lattice(np.array(self.wannier_list), self.prim_vec, map(str, range(self.num_wann)) )
-        self.atomic_lattice = self._build_polyatomic_lattice(np.array([x[1] for x in self.atom_list]), self.prim_vec, [x[0] for x in self.atom_list])
+
+        self.lattice = self._build_polyatomic_lattice(
+            basis=np.array(self.wannier_list, dtype=float),
+            prim_vec=self.prim_vec,
+            name=[str(i) for i in range(self.num_wann)],
+        )
+
+        self.atomic_lattice = self._build_polyatomic_lattice(
+            basis=np.array([x[1] for x in self.atom_list], dtype=float),
+            prim_vec=self.prim_vec,
+            name=[x[0] for x in self.atom_list],
+        )
 
     @staticmethod
     def _extract_floats(line: str) -> list[float]:
@@ -90,6 +105,9 @@ class Wannier90ToKwant:
 
     def _zero_R(self) -> tuple[int, ...]:
         return (0,) * self.n
+
+    def _zero_tag(self) -> tuple[int, ...]:
+        return (0,) * 3
 
     def _parse_wout(self) -> None:
         text = self.wout_path.read_text()
@@ -120,12 +138,12 @@ class Wannier90ToKwant:
 
         return np.asarray(rows, dtype=float)
 
-    def _parse_atom_list(self, text: str) -> list[tuple[str, tuple[float, ...]]]:
+    def _parse_atom_list(self, text: str) -> list[tuple[str, np.ndarray]]:
         """
         Parse lines like:
         | Sb   1   0.00000   0.00000   0.07079   |    0.00000   0.00000   3.14938    |
         """
-        atom_list: list[tuple[str, tuple[float, ...]]] = []
+        atom_list: list[tuple[str, np.ndarray]] = []
 
         lines = text.splitlines()
         in_block = False
@@ -139,14 +157,13 @@ class Wannier90ToKwant:
             r"([-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?)\s+"
             r"([-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?)\s*\|"
         )
-        
+
         for line in lines:
             if "Cartesian Coordinate (Ang)" in line:
                 in_block = True
                 continue
 
             if in_block and line.strip().startswith("*---"):
-                # footer of the block
                 break
 
             if not in_block:
@@ -155,7 +172,10 @@ class Wannier90ToKwant:
             m = atom_re.match(line)
             if m:
                 atom_type = m.group(1)
-                cart = np.array([float(m.group(2)), float(m.group(3)), float(m.group(4))], dtype=float)
+                cart = np.array(
+                    [float(m.group(2)), float(m.group(3)), float(m.group(4))],
+                    dtype=float,
+                )
                 atom_list.append((atom_type, cart))
 
         if not atom_list:
@@ -163,11 +183,14 @@ class Wannier90ToKwant:
 
         return atom_list
 
-    def _parse_wannier_list(self, text: str) -> list[tuple[float, ...]]:
+    def _parse_wannier_list(self, text: str) -> list[np.ndarray]:
         """
-        Parse Wannier centers from the *final* 'Final State' block.
+        Parse Wannier centers from the final 'Final State' block.
         """
-        final_state_positions = [m.start() for m in re.finditer(r"^\s*Final State\b", text, flags=re.MULTILINE)]
+        final_state_positions = [
+            m.start()
+            for m in re.finditer(r"^\s*Final State\b", text, flags=re.MULTILINE)
+        ]
         if not final_state_positions:
             raise ValueError("Could not find 'Final State' block in wout.")
 
@@ -182,18 +205,22 @@ class Wannier90ToKwant:
             r"\)"
         )
 
-        tmp: dict[int, tuple[float, ...]] = {}
+        tmp: dict[int, np.ndarray] = {}
         for m in wf_re.finditer(subtext):
             idx = int(m.group(1))
-            pos = np.array([float(m.group(2)), float(m.group(3)), float(m.group(4))], dtype=float)
-            tmp[idx] = tuple(pos)
+            pos = np.array(
+                [float(m.group(2)), float(m.group(3)), float(m.group(4))],
+                dtype=float,
+            )
+            tmp[idx] = pos
 
         if not tmp:
-            raise ValueError("Could not parse Wannier centres from final-state block in wout.")
+            raise ValueError(
+                "Could not parse Wannier centres from final-state block in wout."
+            )
 
         max_idx = max(tmp)
-        wannier_list = [tmp[i] for i in range(1, max_idx + 1)]
-        return wannier_list
+        return [tmp[i] for i in range(1, max_idx + 1)]
 
     def _parse_hr(self) -> None:
         lines = self.hr_path.read_text().splitlines()
@@ -215,8 +242,8 @@ class Wannier90ToKwant:
             R_full = tuple(int(parts[i]) for i in range(3))
             R = R_full[: self.n]
 
-            m = int(parts[3]) - 1
-            n = int(parts[4]) - 1
+            i = int(parts[3]) - 1
+            j = int(parts[4]) - 1
             re_part = float(parts[5])
             im_part = float(parts[6])
             val = complex(re_part, im_part)
@@ -224,20 +251,17 @@ class Wannier90ToKwant:
             if R not in ham_accum:
                 ham_accum[R] = np.zeros((self.num_wann, self.num_wann), dtype=complex)
 
-            ham_accum[R][m, n] += val
+            ham_accum[R][i, j] += val
 
         if self.rel_cutoff is not None and self.abs_hamiltonian_cutoff is None:
-            self.abs_hamiltonian_cutoff = self.rel_cutoff * max(
-                map(
-                    lambda x : abs(x).max(),
-                    ham_accum.values()
-                )
-            )
-            
+            max_abs = max(np.abs(mat).max() for mat in ham_accum.values())
+            self.abs_hamiltonian_cutoff = self.rel_cutoff * max_abs
+
+        assert self.abs_hamiltonian_cutoff is not None
+
         for R, mat in ham_accum.items():
-            mat[np.abs(mat) < self.abs_hamiltonian_cutoff] = 0            
-            
-        # Drop keys with all-zero matrices after cutoff
+            mat[np.abs(mat) < self.abs_hamiltonian_cutoff] = 0
+
         self.ham_dict = {
             R: mat
             for R, mat in ham_accum.items()
@@ -245,63 +269,139 @@ class Wannier90ToKwant:
         }
 
     @staticmethod
-    def _build_polyatomic_lattice(basis, prim_vec, name = '') -> kwant.lattice.general:
+    def _build_polyatomic_lattice(
+        basis: np.ndarray,
+        prim_vec: np.ndarray,
+        name="",
+    ) -> kwant.lattice.general:
         norbs = [1] * basis.shape[0]
-        return kwant.lattice.general(prim_vecs=prim_vec.T, basis=basis, name = name, norbs=norbs)
+        return kwant.lattice.general(
+            prim_vecs=prim_vec.T,
+            basis=basis,
+            name=name,
+            norbs=norbs,
+        )
 
-    def to_kwant_system(self, shape_fun: Callable[[np.ndarray], bool]):
+    def _build_atomic_dummy_builder(
+        self,
+        shape_fun: Callable[[np.ndarray], bool],
+    ) -> kwant.Builder:
         """
-        Build and return a finite Kwant Builder.
+        Build a dummy atomic builder containing only sites inside `shape_fun`.
+        This is used purely to determine which lattice tags (unit cells) are
+        present in the target atomic region.
+        """
+        syst = kwant.Builder()
+        zero_tag = self._zero_tag()
 
-        Parameters
-        ----------
-        shape_fun
-            Shape predicate passed to kwant's shape() selector.
-            It should accept a real-space position vector and return bool.
+        for sublat in self.atomic_lattice.sublattices:
+            syst[sublat.shape(shape_fun, zero_tag)] = 0.0
 
-        Returns
-        -------
-        kwant.Builder
-        """        
+        return syst
+
+    def _build_wannier_builder(
+        self,
+        shape_fun: Callable[[np.ndarray], bool],
+    ) -> kwant.Builder:
+        """
+        Build a Wannier builder from the parsed Hamiltonian and a shape function.
+        """
         if self.lattice is None:
-            raise RuntimeError("Lattice has not been built.")
+            raise RuntimeError("Wannier lattice has not been built.")
 
         syst = kwant.Builder()
-        zero_tag = (0,0,0) 
-
-        for sublat in self.lattice.sublattices:
-            syst[sublat.shape(shape_fun, zero_tag)] = 0.
-
+        zero_tag = self._zero_tag()
         zero_R = self._zero_R()
 
-        # Fill onsite / same-cell inter-sublattice / inter-cell hoppings
-        for R, full_mat in self.ham_dict.items():
+        for sublat in self.lattice.sublattices:
+            syst[sublat.shape(shape_fun, zero_tag)] = 0.0
 
+        for R, full_mat in self.ham_dict.items():
             for i in range(self.num_wann):
                 for j in range(self.num_wann):
-                    block = full_mat[i, j]
+                    val = full_mat[i, j]
 
-                    if not np.any(np.abs(block) >= self.abs_hamiltonian_cutoff):
+                    if abs(val) < self.abs_hamiltonian_cutoff:
                         continue
 
-                    # R = 0 and i = j  -> onsite matrix for each site of that sublattice
                     if R == zero_R and i == j:
                         sublat = self.lattice.sublattices[i]
-                        syst[sublat.shape(shape_fun, zero_tag)] = block
+                        syst[sublat.shape(shape_fun, zero_tag)] = val
                         continue
 
-                    # For Kwant's HoppingKind convention, the sign that usually matches
-                    # wannier90_hr.dat is -R. This is the same choice tbmodels uses.
                     hop_R = tuple(-x for x in R)
-
                     syst[
                         kwant.builder.HoppingKind(
                             hop_R,
                             self.lattice.sublattices[i],
                             self.lattice.sublattices[j],
                         )
-                    ] = block
+                    ] = val
 
+        return syst
+
+    @staticmethod
+    def _filter_builder_by_tags(
+        builder: kwant.Builder,
+        allowed_tags: set[tuple[int, ...]],
+    ) -> kwant.Builder:
+        """
+        Keep only sites whose `site.tag` is in `allowed_tags`, and only hoppings
+        whose endpoints both survive.
+        """
+        filtered = kwant.Builder()
+
+        kept_sites = [site for site in builder.sites() if tuple(site.tag) in allowed_tags]
+        kept_site_set = set(kept_sites)
+
+        for site in kept_sites:
+            filtered[site] = builder[site]
+
+        for a, b in builder.hoppings():
+            if a in kept_site_set and b in kept_site_set:
+                filtered[a, b] = builder[a, b]
+
+        return filtered
+
+    def to_kwant_system(self, shape_fun: Callable[[np.ndarray], bool]):
+        """
+        Backward-compatible method: build a Wannier system directly using `shape_fun`.
+        """
+        syst = self._build_wannier_builder(shape_fun)
         syst.eradicate_dangling()
-        self.system = syst.finalized()        
+        self.system = syst.finalized()
         return self.system
+
+    def to_kwant_systems(
+        self,
+        shape_fun: Callable[[np.ndarray], bool],
+        larger_shape_fun: Callable[[np.ndarray], bool],
+    ):
+        """
+        Build and return:
+
+        1. atomic_system:
+           Dummy atomic system cut with `shape_fun`
+        2. system:
+           Wannier system first cut with `larger_shape_fun`, then filtered so that
+           only sites with `site.tag` present in `atomic_system` are kept
+
+        Notes
+        -----
+        - `atomic_system` is meant only as a geometric helper for identifying
+          atomic unit cells inside `shape_fun`.
+        - Filtering is done by matching the Bravais-lattice tag `site.tag`.
+        """
+        atomic_builder = self._build_atomic_dummy_builder(shape_fun)
+        allowed_tags = {tuple(site.tag) for site in atomic_builder.sites()}
+
+        wannier_large_builder = self._build_wannier_builder(larger_shape_fun)
+        wannier_filtered_builder = self._filter_builder_by_tags(
+            wannier_large_builder,
+            allowed_tags,
+        )
+
+        self.atomic_system = atomic_builder.finalized()
+        self.system = wannier_filtered_builder.finalized()
+
+        return self.atomic_system, self.system
