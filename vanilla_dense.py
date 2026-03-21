@@ -285,6 +285,13 @@ def run_training_loop(model, params, features, targets, model_name):
 
 def validate(model, features, targets, model_name):
     params = load_model(model_name)
+    
+    data = get_data()
+    targets_mean, targets_sd = data["targets_stats"] 
+    features_mean, features_sd = data["features_stats"]
+    targets = normalize(targets, targets_mean, targets_sd)
+    features = normalize(features, features_mean, features_sd)
+    
     loss = make_cost_func(model, features, targets, mean = False)
     loss_vals = loss(params)
     plt.xlabel("structure size")
