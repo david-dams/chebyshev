@@ -380,11 +380,11 @@ def validate(model, data, model_name):
     params = load_model(model_name)
 
     err = mse(model, params, data, normalize = True)
-    plot_validation_loss(data, err, xlabel = 'radius', ylabel = 'error (std)', model_name + "_err_std.pdf")
+    plot_validation_loss(data, err, xlabel = 'radius', ylabel = 'error (std)', name = model_name + "_err_std.pdf")
 
     # unstandardized error
     err = mse(model, params, data, normalize = False)
-    plot_validation_loss(data, err, xlabel = 'radius', ylabel = 'error', model_name + "_err.pdf")
+    plot_validation_loss(data, err, xlabel = 'radius', ylabel = 'error', name = model_name + "_err.pdf")
     
     # print("## STATS ##")
     # print(model_name, ", median R^2: ", jnp.median(r_squared(y, y_pred)))
