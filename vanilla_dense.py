@@ -239,8 +239,7 @@ def run_linear_regression():
     run_training_loop(model, params, features, targets, model_name)    
     plot_loss(model_name)
 
-    features, targets = data["validation"]
-    validate(model, features, targets, model_name)    
+    validate(model, data, model_name)    
 
 def run_mlp():
     model_name = "mlp"
@@ -252,8 +251,7 @@ def run_mlp():
     run_training_loop(model, params, features, targets, model_name)    
     plot_loss(model_name)
 
-    features, targets = data["validation"]
-    validate(model, features, targets, model_name)    
+    validate(model, data, model_name)    
 
 def run_cnn():
     model_name = "cnn"
@@ -266,8 +264,7 @@ def run_cnn():
     run_training_loop(model, params, features, targets, model_name, use_scan = False)    
     plot_loss(model_name)
 
-    features, targets = data["validation"]
-    validate(model, features, targets, model_name)        
+    validate(model, data, model_name)        
 
 ## GENERIC TRAINING ##
 def get_training_func(tx, loss_grad_fn):
@@ -320,28 +317,29 @@ def run_training_loop(model, params, features, targets, model_name, use_scan = T
     save_loss(loss_history, model_name)
     
 ## GENERIC VALIDATION ##
-def validate(model, features, targets, model_name):
+def validate(model, data, model_name):
+    x_std, y_std = data["validation"]
+    x_mean, x_sigma = data["features_stats"]
+    x = denormalize(x_std, x_mean, x_sigma)
+    
     # standardized error
     params = load_model(model_name)        
-    loss = make_cost_func(model, features, targets, mean = False)
+    loss = make_cost_func(model, x_std, y_std, mean = False)
     loss_vals = loss(params)    
     plt.xlabel("Structure size")
     plt.ylabel("Validation loss (std)")
     print(model_name, ", validation loss (std): ", jnp.mean(loss_vals))
-    plt.plot(features.sum(axis =  1), loss_vals)
+    plt.plot(x.sum(axis = 1), loss_vals)
     plt.savefig(f"std_loss_validation_{model_name}.pdf")
     plt.close()
 
     # unstandardized error
-    data = get_data()
-    y_mean, y_sd = data["targets_stats"]
-    x_mean, x_sd = data["features_stats"]
-    x = features
-    y_pred = jax.vmap(lambda x : model.apply(params, x))(x)
+    y_mean, y_sigma = data["targets_stats"]
+    y_pred = jax.vmap(lambda x : model.apply(params, x))(x_std)
     
     # denormalize
-    y_pred = denormalize(y_pred, y_mean, y_sd)
-    y = denormalize(targets, y_mean, y_sd)
+    y_pred = denormalize(y_pred, y_mean, y_sigma)
+    y = denormalize(y_std, y_mean, y_sigma)
 
     # average over chebyshev coefficients
     loss_vals = jnp.mean((y - y_pred)**2, axis = 1)
@@ -349,7 +347,7 @@ def validate(model, features, targets, model_name):
     plt.xlabel("Structure size")
     plt.ylabel("Validation loss")
     print(model_name, ", validation loss: ", jnp.mean(loss_vals))
-    plt.plot(features.sum(axis =  1), loss_vals)
+    plt.plot(x.sum(axis =  1), loss_vals)
     plt.savefig(f"loss_validation_{model_name}.pdf")
     plt.close()
 
