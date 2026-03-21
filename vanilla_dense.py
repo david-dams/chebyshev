@@ -130,8 +130,8 @@ class FusionMLP(nn.Module):
         abs_part   = x[:MAX_FEATURES, :]        
         angle_part = x[MAX_FEATURES:, :]        
 
-        xr = nn.Dense(self.n1, name = "denseRadius"))(abs_part.reshape(-1)) 
-        xa = nn.Dense(self.n1, name = "denseAngle"))(angle_part.reshape(-1)) 
+        xr = nn.Dense(self.n1, name = "denseRadius")(abs_part.reshape(-1)) 
+        xa = nn.Dense(self.n1, name = "denseAngle")(angle_part.reshape(-1)) 
         x  = jnp.concatenate([xr, xa], axis=-1)
         x = nn.sigmoid(x)
         x = nn.Dense(features=self.n2, name = "dense2")(x)
