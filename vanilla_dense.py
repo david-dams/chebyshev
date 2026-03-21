@@ -42,11 +42,12 @@ def split_data(features, targets):
     targets_mean, targets_sd = jnp.mean(tt, axis = 0), jnp.std(tt, axis = 0)
     features_mean, features_sd = jnp.mean(ft, axis = 0), jnp.std(ft, axis = 0)
     
+    
     data = {
         "train" : [normalize(ft, features_mean, features_sd), normalize(tt, targets_mean, targets_sd)],
         "targets_stats" : [targets_mean, targets_sd],
         "features_stats" : [features_mean, features_sd],
-        "validation" : [fv, tv],
+        "validation" : [normalize(fv, features_mean, features_sd), normalize(tv, targets_mean, targets_sd)],
     }
     
     return data
@@ -283,14 +284,7 @@ def run_training_loop(model, params, features, targets, model_name):
     save_loss(loss_history, model_name)
 
 def validate(model, features, targets, model_name):
-    params = load_model(model_name)
-    
-    data = get_data()
-    targets_mean, targets_sd = data["targets_stats"] 
-    features_mean, features_sd = data["features_stats"]
-    targets = normalize(targets, targets_mean, targets_sd)
-    features = normalize(features, features_mean, features_sd)
-    
+    params = load_model(model_name)        
     loss = make_cost_func(model, features, targets, mean = False)
     loss_vals = loss(params)
     plt.xlabel("structure size")
