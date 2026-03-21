@@ -218,7 +218,7 @@ def make_mlp():
     
     # predict array of shape n_samples x n_batch
     n_out = targets["mu"].shape[-1]
-    n_in = features.shape[-1]
+    n_in = features["fourier"].shape[-1]
     n_hidden = n_out + n_in #n_out #int((n_out + n_in) * 2/3)
 
     model = MLP(n1 = n_hidden, n2 = n_out)
