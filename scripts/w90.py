@@ -138,7 +138,8 @@ class Wannier90ToKwant:
 
         return np.asarray(rows, dtype=float)
 
-    def _parse_atom_list(self, text: str) -> list[tuple[str, np.ndarray]]:
+    @staticmethod
+    def _parse_atom_list(text: str) -> list[tuple[str, np.ndarray]]:
         """
         Parse lines like:
         | Sb   1   0.00000   0.00000   0.07079   |    0.00000   0.00000   3.14938    |
@@ -229,7 +230,13 @@ class Wannier90ToKwant:
 
         self.num_wann = int(lines[1].strip())
         self.nrpts = int(lines[2].strip())
-        n_deg_lines = math.ceil(self.nrpts / 15)
+        n_deg_lines = math.ceil(self.nrpts / 15)        
+        degeneracies = []
+        for line in lines[3 : 3 + n_deg_lines]:
+            degeneracies.extend(int(x) for x in line.split())
+        assert len(degeneracies) == self.nrpts
+        assert all(d == 1 for d in degeneracies), sorted(set(degeneracies))
+
         data_start = 3 + n_deg_lines
 
         ham_accum: dict[tuple[int, ...], np.ndarray] = {}
@@ -240,6 +247,8 @@ class Wannier90ToKwant:
                 continue
 
             R_full = tuple(int(parts[i]) for i in range(3))
+            
+            assert R_full[self.n:] == tuple([0 for i in range(3 - self.n)]), f"Wannier file uses dimensionality inconsistent with {self.n}"                
             R = R_full[: self.n]
 
             i = int(parts[3]) - 1

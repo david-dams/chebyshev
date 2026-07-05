@@ -24,13 +24,14 @@ def test_hamiltonian(w90_path):
         x, y, _ = pos
         return x**2 + y**2 < 20**2
 
-    fsyst = parsed.to_kwant_system(shape)
+    ass, fsyst = parsed.to_kwant_systems(shape, shape)
 
     ham_dict = parsed.ham_dict
     keys = set(ham_dict.keys())
     sites = fsyst.sites
     wannier_pos = np.array(parsed.wannier_list)
     cutoff = parsed.abs_hamiltonian_cutoff
+    kwant.plot(ass)
 
     for i, si in enumerate(sites):
         tag_i = si.tag

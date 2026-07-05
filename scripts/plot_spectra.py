@@ -2,6 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from numpy.polynomial.chebyshev import chebval
 
+import scipy.linalg as la
+import matplotlib.pyplot as plt
+
 from train import PLOT_DIR, PREDICTIONS_DIR
 USE_PRED_AB = True
 
