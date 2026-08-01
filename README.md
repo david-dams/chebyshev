@@ -1,5 +1,42 @@
-# Machine Learning of Chebyshev Coefficients in the Kernel Polynomial Method
+# ML of Chebyshev Coefficients for 2D Nanoflakes
 
-The Kernel Polynomial Method (KPM), see this [review](http://dx.doi.org/10.1103/RevModPhys.78.275), allows efficient (linear) calculation of spectral quantities by expanding them into Chebyshev coefficients.
+Predict Kernel Polynomial Method (KPM) Chebyshev coefficients directly
+from the geometry of Wannier90 2D nanoflakes, bypassing the costly
+spectral-density calculation. See [Weisse et al., Rev. Mod. Phys. 78,
+275 (2006)](http://dx.doi.org/10.1103/RevModPhys.78.275) for KPM background.
 
-This repository contains code to directly predict the Chebyshev coefficients for 2D nanoflakes directly from geometric data, which allows to further accelerate the performance of this method and perhaps unify with existing ab initio approaches.
+## Quick start
+
+```bash
+# 1. Generate per-sample features + KPM moments from JARVIS Wannier90 data
+python scripts/generate_data.py
+
+# 2. Train all models on both holdout splits
+python scripts/train.py radius_interval material
+
+# 3. Reconstruct DOS plots from predicted coefficients
+python scripts/plot_spectra.py
+```
+
+## Repository layout
+
+```
+scripts/
+  w90.py            # Wannier90 .wout/.hr.dat -> Kwant system
+  generate_data.py  # build flakes, extract features + KPM moments
+  train.py           # train linear/MLP/CNN, two holdout splits
+  plot_spectra.py    # reconstruct DOS from predicted coefficients
+tests/               # pytest: parsing, boundary, feature invariants
+data/                # gitignored: wannier/, coefficients/, training.npz
+```
+
+## Holdout splits
+
+- **`radius_interval`** — hold out samples with radius in `HOLDOUT_RADIUS_RANGE`;
+  tests within-material interpolation across flake size.
+- **`material`** — hold out 20% of unique material IDs; tests cross-material
+  generalization.
+
+## Dependencies
+
+Python >=3.13 · kwant · jax · flax · optax · numpy · scipy · shapely
