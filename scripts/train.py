@@ -30,12 +30,7 @@ MATERIAL_HOLDOUT_FRACTION = 0.2   # fraction of unique materials held out for va
 BATCH_SIZE = 128
 SHUFFLE_EACH_EPOCH = True
 
-# The assembled feature vector is dominated by a very high-dimensional intra-cell
-# basis histogram block (grows ~quadratically with the species vocabulary). The
-# low-index features are the informative, low-dimensional geometric descriptors
-# (pooled boundary Fourier, species histogram, bond-angle histogram, lattice,
-# thickness). Cap to those to keep the simple models tractable.
-MAX_FEATURES = 300  # None => use the full assembled feature vector
+MAX_FEATURES = None  # None => use the full assembled feature vector
 N_MOMENTS = 100
 NORMALIZE_AB = True
 

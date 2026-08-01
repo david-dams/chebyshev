@@ -427,6 +427,7 @@ def basis_feature_dim(species_vocab):
     return len(species_pairs(species_vocab)) * block
 
 
+# currently unused — kept for future re-enabling
 def basis_features(atom_list, prim_vec, species_vocab):
     """Material-level descriptor of the atomic basis inside the unit cell.
 
@@ -529,13 +530,12 @@ def assemble_features(
     bond_angle_hist,
     lattice_features,
     thickness_features,
-    basis,
 ):
     """Concatenate per-sample features into one fixed-length flat vector.
 
     Layout:
         [ mean_layers(fourier), mean_layers(species_hist),
-          mean_layers(bond_angle_hist), lattice(4), thickness(3), basis(B) ]
+          mean_layers(bond_angle_hist), lattice(4), thickness(3) ]
     """
     return np.concatenate(
         [
@@ -544,7 +544,6 @@ def assemble_features(
             _pool_layers(bond_angle_hist),
             np.asarray(lattice_features, dtype=float).ravel(),
             np.asarray(thickness_features, dtype=float).ravel(),
-            np.asarray(basis, dtype=float).ravel(),
         ]
     ).astype(np.float32)
 
@@ -671,7 +670,6 @@ def generate_data():
 
             lattice_feats = lattice_vector_features(prim_vec)
             thickness_feats = thickness_features(atomic_system)
-            basis = basis_features(sample["atom_list"], prim_vec, species_vocab)
 
             moments, a, b = get_moments_limits(fsyst)
 
@@ -681,7 +679,6 @@ def generate_data():
                 bond_angle_hist,
                 lattice_feats,
                 thickness_feats,
-                basis,
             )
         except Exception as e:
             print(f"SKIP {fname}: feature/KPM failed ({type(e).__name__}: {e})")
@@ -696,7 +693,6 @@ def generate_data():
             z_values=z_fourier,
             lattice_features=lattice_feats,
             thickness_features=thickness_feats,
-            basis_features=basis,
             moments=np.asarray(moments),
             a=a,
             b=b,
@@ -727,7 +723,6 @@ def extract_features():
     z_values = []
     lattice_features = []
     thickness = []
-    basis = []
 
     moments = []
     lower_limits = []
@@ -756,7 +751,6 @@ def extract_features():
         z_values.append(data["z_values"])
         lattice_features.append(data["lattice_features"])
         thickness.append(data["thickness_features"])
-        basis.append(np.asarray(data["basis_features"], dtype=float))
 
         moments.append(np.asarray(data["moments"]))
         lower_limits.append(float(data["a"]))
@@ -791,7 +785,6 @@ def extract_features():
         z_values=np.asarray(z_values, dtype=object),
         lattice_features=np.asarray(lattice_features, dtype=float),
         thickness_features=np.asarray(thickness, dtype=float),
-        basis_features=np.asarray(basis, dtype=float),
 
         moments=moments,
         lower_limits=np.asarray(lower_limits, dtype=float),

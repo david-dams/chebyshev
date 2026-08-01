@@ -70,7 +70,6 @@ def test_basis_features_blocks_normalized():
 
 def test_assemble_features_length_and_dtype():
     atom_list, prim_vec, vocab = _toy_basis()
-    basis = g.basis_features(atom_list, prim_vec, vocab)
 
     n_layers = 2
     fourier = np.random.rand(n_layers, 2 * g.N_FOURIER_MODES)
@@ -80,7 +79,7 @@ def test_assemble_features_length_and_dtype():
     thickness = np.arange(3.0)
 
     feat = g.assemble_features(
-        fourier, species_hist, bond_angle_hist, lattice, thickness, basis
+        fourier, species_hist, bond_angle_hist, lattice, thickness
     )
 
     expected = (
@@ -89,7 +88,6 @@ def test_assemble_features_length_and_dtype():
         + g.N_ANGLE_BINS
         + 4
         + 3
-        + g.basis_feature_dim(vocab)
     )
     assert feat.shape == (expected,)
     assert feat.dtype == np.float32
@@ -97,7 +95,6 @@ def test_assemble_features_length_and_dtype():
 
 def test_assemble_features_mean_pools_layers():
     vocab = ["C", "N"]
-    basis = np.zeros(g.basis_feature_dim(vocab))
 
     fourier = np.stack(
         [np.ones(2 * g.N_FOURIER_MODES), 3.0 * np.ones(2 * g.N_FOURIER_MODES)]
@@ -106,7 +103,7 @@ def test_assemble_features_mean_pools_layers():
     bond_angle_hist = np.zeros((2, g.N_ANGLE_BINS))
 
     feat = g.assemble_features(
-        fourier, species_hist, bond_angle_hist, np.zeros(4), np.zeros(3), basis
+        fourier, species_hist, bond_angle_hist, np.zeros(4), np.zeros(3)
     )
     # first block is the mean-pooled fourier -> (1 + 3) / 2 == 2
     assert np.allclose(feat[: 2 * g.N_FOURIER_MODES], 2.0)
@@ -155,7 +152,6 @@ def test_feature_pipeline_on_system(parsed):
         bond_angle_hist,
         g.lattice_vector_features(parsed.prim_vec),
         g.thickness_features(atomic_system),
-        basis,
     )
 
     expected = (
@@ -164,7 +160,6 @@ def test_feature_pipeline_on_system(parsed):
         + g.N_ANGLE_BINS
         + 4
         + 3
-        + g.basis_feature_dim(vocab)
     )
     assert feat.shape == (expected,)
     assert np.isfinite(feat).all()
