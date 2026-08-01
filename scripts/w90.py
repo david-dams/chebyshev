@@ -235,11 +235,22 @@ class Wannier90ToKwant:
         for line in lines[3 : 3 + n_deg_lines]:
             degeneracies.extend(int(x) for x in line.split())
         assert len(degeneracies) == self.nrpts
-        assert all(d == 1 for d in degeneracies), sorted(set(degeneracies))
+
+        assert all(d in (1, 2, 4, 8) for d in degeneracies), (
+            f"unexpected WS degeneracy values: "
+            f"{[d for d in degeneracies if d not in (1, 2, 4, 8)]}"
+        )
 
         data_start = 3 + n_deg_lines
 
         ham_accum: dict[tuple[int, ...], np.ndarray] = {}
+
+        # Standard w90 convention: hr.dat stores the sum over degenerate
+        # WS points, so divide by the degeneracy weight to recover the
+        # symmetrized matrix element.
+        r_deg_full: dict[tuple[int, ...], int] = {}
+        r_seen_count = 0
+        out_of_plane_zero = tuple(0 for _ in range(3 - self.n))
 
         for line in lines[data_start:]:
             parts = line.split()
@@ -247,15 +258,22 @@ class Wannier90ToKwant:
                 continue
 
             R_full = tuple(int(parts[i]) for i in range(3))
-            
-            assert R_full[self.n:] == tuple([0 for i in range(3 - self.n)]), f"Wannier file uses dimensionality inconsistent with {self.n}"                
+
+            if R_full not in r_deg_full:
+                r_deg_full[R_full] = degeneracies[r_seen_count]
+                r_seen_count += 1
+            deg = r_deg_full[R_full] or 1
+
+            assert R_full[self.n:] == out_of_plane_zero, (
+                f"out-of-plane hopping R={R_full} for n={self.n}"
+            )
             R = R_full[: self.n]
 
             i = int(parts[3]) - 1
             j = int(parts[4]) - 1
             re_part = float(parts[5])
             im_part = float(parts[6])
-            val = complex(re_part, im_part)
+            val = complex(re_part, im_part) / deg
 
             if R not in ham_accum:
                 ham_accum[R] = np.zeros((self.num_wann, self.num_wann), dtype=complex)
