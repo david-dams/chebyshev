@@ -179,10 +179,20 @@ def plot_predictions_2d(name, use_pred_ab=False, n_energy=400):
 
 
 if __name__ == "__main__":
-    plot_predictions("cnn", n_samples=4, use_pred_ab=USE_PRED_AB)
-    plot_predictions("linear_regression", n_samples=4, use_pred_ab=USE_PRED_AB)
-    plot_predictions("mlp", n_samples=4, use_pred_ab=USE_PRED_AB)
+    import os
 
-    plot_predictions_2d("cnn", use_pred_ab=USE_PRED_AB)
-    plot_predictions_2d("linear_regression", use_pred_ab=USE_PRED_AB)
-    plot_predictions_2d("mlp", use_pred_ab=USE_PRED_AB)
+    models = ["linear_regression", "mlp", "cnn"]
+    splits = ["radius_interval", "material"]
+
+    for split in splits:
+        for model in models:
+            name = f"{model}_{split}"
+            if not os.path.exists(os.path.join(PREDICTIONS_DIR, f"{name}.npz")):
+                print(f"skip {name}: no predictions file")
+                continue
+            try:
+                plot_predictions(name, n_samples=4, use_pred_ab=USE_PRED_AB)
+                plot_predictions_2d(name, use_pred_ab=USE_PRED_AB)
+                print(f"plotted {name}")
+            except Exception as e:
+                print(f"plot failed for {name}: {type(e).__name__}: {e}")

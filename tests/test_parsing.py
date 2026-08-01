@@ -5,7 +5,7 @@ import pytest
 import kwant
 import numpy as np
 
-from chebyshev.w90 import Wannier90ToKwant
+from w90 import Wannier90ToKwant
 
 @pytest.fixture
 def w90_path():
@@ -20,9 +20,10 @@ def test_hamiltonian(w90_path):
         rel_cutoff=1e-3,
     )
 
+    # small radius keeps the O(N^2) consistency check fast
     def shape(pos):
         x, y, _ = pos
-        return x**2 + y**2 < 20**2
+        return x**2 + y**2 < 8**2
 
     ass, fsyst = parsed.to_kwant_systems(shape, shape)
 
@@ -31,7 +32,6 @@ def test_hamiltonian(w90_path):
     sites = fsyst.sites
     wannier_pos = np.array(parsed.wannier_list)
     cutoff = parsed.abs_hamiltonian_cutoff
-    kwant.plot(ass)
 
     for i, si in enumerate(sites):
         tag_i = si.tag

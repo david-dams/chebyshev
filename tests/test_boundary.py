@@ -1,7 +1,7 @@
 import numpy as np
 import kwant
 
-from chebyshev.utils import boundary_points_by_angular_gap
+from generate_data import boundary_points_by_angular_gap
 
 def test_boundary_graphene():
     syst = kwant.Builder()
@@ -20,4 +20,5 @@ def test_boundary_graphene():
     border2, _, _ = boundary_points_by_angular_gap(pos)
 
     for b in border:
-        assert b in border2, f"{b} not detected"
+        found = np.any(np.all(np.isclose(border2, b), axis=1))
+        assert found, f"{b} not detected"

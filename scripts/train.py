@@ -24,12 +24,18 @@ LEARNING_RATE = 1e-2
 NUM_STEPS = 500
 TRAINING_SET_PERCENTAGE = 0.8
 
-HOLDOUT_RADIUS_RANGE = (40.0, 60.0)   
-HOLDOUT_MODE = "radius_interval"  # "random"
+HOLDOUT_RADIUS_RANGE = (8.5, 9.5)   
+HOLDOUT_MODE = "radius_interval"  # "random" | "radius_interval" | "material"
+MATERIAL_HOLDOUT_FRACTION = 0.2   # fraction of unique materials held out for validation
 BATCH_SIZE = 128
 SHUFFLE_EACH_EPOCH = True
 
-MAX_FEATURES = 100
+# The assembled feature vector is dominated by a very high-dimensional intra-cell
+# basis histogram block (grows ~quadratically with the species vocabulary). The
+# low-index features are the informative, low-dimensional geometric descriptors
+# (pooled boundary Fourier, species histogram, bond-angle histogram, lattice,
+# thickness). Cap to those to keep the simple models tractable.
+MAX_FEATURES = 300  # None => use the full assembled feature vector
 N_MOMENTS = 100
 NORMALIZE_AB = True
 
@@ -163,12 +169,17 @@ class Dataset:
 # Data loading / splitting
 # ----------------------------
 def split_data(features, moments, radii, corners, lower_limits, upper_limits,
+               models=None,
                holdout_mode="random",
                holdout_radius_range=None):
     x = jnp.asarray(features, dtype=jnp.float32)
     mu = jnp.asarray(moments, dtype=jnp.float32)
     radii = jnp.asarray(radii, dtype=jnp.float32)
     corners = jnp.asarray(corners, dtype=jnp.float32)
+
+    if models is None:
+        models = np.zeros(x.shape[0], dtype=object)
+    models = np.asarray(models, dtype=object)
 
     ab = jnp.stack(
         [
@@ -201,6 +212,27 @@ def split_data(features, moments, radii, corners, lower_limits, upper_limits,
             raise ValueError("No training samples left after radius holdout")
         if idx_val.size == 0:
             raise ValueError("No validation samples in requested radius holdout range")
+
+    elif holdout_mode == "material":
+        unique_models = np.array(sorted(set(models.tolist())), dtype=object)
+        n_materials = unique_models.shape[0]
+        if n_materials < 2:
+            raise ValueError(
+                f"material holdout needs >= 2 distinct materials, got {n_materials}"
+            )
+
+        n_val = max(1, int(round(MATERIAL_HOLDOUT_FRACTION * n_materials)))
+        perm = np.asarray(jax.random.permutation(split_rng, n_materials))
+        val_models = set(unique_models[perm[:n_val]].tolist())
+
+        val_mask_np = np.array([m in val_models for m in models.tolist()], dtype=bool)
+        idx_train = jnp.asarray(np.where(~val_mask_np)[0])
+        idx_val = jnp.asarray(np.where(val_mask_np)[0])
+
+        if idx_train.size == 0:
+            raise ValueError("No training samples left after material holdout")
+        if idx_val.size == 0:
+            raise ValueError("No validation samples after material holdout")
 
     else:
         raise ValueError(f"Unknown holdout_mode: {holdout_mode}")
@@ -237,7 +269,7 @@ def split_data(features, moments, radii, corners, lower_limits, upper_limits,
     )
 
 def get_data():
-    raw = np.load(TRAINING_DATA, allow_pickle=False)
+    raw = np.load(TRAINING_DATA, allow_pickle=True)
 
     features = raw["features"][..., :MAX_FEATURES]
     moments = raw["moments"][..., :N_MOMENTS]
@@ -250,6 +282,11 @@ def get_data():
 
     radii = np.asarray(raw["radii"], dtype=np.float32)
     corners = np.asarray(raw["corners"], dtype=np.float32)
+
+    if "models" in raw:
+        models = np.asarray(raw["models"], dtype=object)
+    else:
+        models = np.zeros(features.shape[0], dtype=object)
 
     if "lower_limits" in raw and "upper_limits" in raw:
         lower_limits = np.asarray(raw["lower_limits"], dtype=np.float32)
@@ -265,6 +302,7 @@ def get_data():
         corners,
         lower_limits,
         upper_limits,
+        models=models,
         holdout_mode=HOLDOUT_MODE,
         holdout_radius_range=HOLDOUT_RADIUS_RANGE,
     )
@@ -423,7 +461,7 @@ def validate(model, data: Dataset, model_name):
         data.validation["radii"],
         err_std_mu,
         ylabel="moment MSE (standardized)",
-        filename=f"{PLOT_DIR}{model_name}_err_std.pdf",
+        filename=os.path.join(PLOT_DIR, f"{model_name}_err_std.pdf"),
     )
 
     pred = predict_split(model, params, data.validation, data, denorm_mu=True, denorm_ab=True)
@@ -437,11 +475,11 @@ def validate(model, data: Dataset, model_name):
         pred["radii"],
         err["mu"],
         ylabel="moment MSE",
-        filename=f"{PLOT_DIR}{model_name}_err.pdf",
+        filename=os.path.join(PLOT_DIR, f"{model_name}_err.pdf"),
     )
 
     np.savez_compressed(
-        f"{PREDICTIONS_DIR}{model_name}.npz",
+        os.path.join(PREDICTIONS_DIR, f"{model_name}.npz"),
         y_mu=np.asarray(pred["y_mu"]),
         y_pred_mu=np.asarray(pred["y_pred_mu"]),
         y_ab=np.asarray(pred["y_ab"]),
@@ -456,14 +494,25 @@ def validate(model, data: Dataset, model_name):
 # Run one model
 # ----------------------------
 def run_model(model_name, use_scan=True, ab_weight=1.0):
+    run_name = f"{model_name}_{HOLDOUT_MODE}"
     data = get_data()
     model, params = make_model(model_name, data)
-    run_training_loop(model, params, data, model_name, use_scan=use_scan, ab_weight=ab_weight)
-    plot_loss(model_name)
-    validate(model, data, model_name)
+    run_training_loop(model, params, data, run_name, use_scan=use_scan, ab_weight=ab_weight)
+    plot_loss(run_name)
+    validate(model, data, run_name)
 
 
 if __name__ == "__main__":
-    run_model(LINEAR_REGRESSION, use_scan=True, ab_weight=1.0)
-    run_model(VANILLA, use_scan=True, ab_weight=1.0)
-    run_model(CNN, use_scan=False, ab_weight=1.0)
+    import sys
+
+    # Optional CLI: `python train.py <split1> <split2> ...`
+    # Defaults to running both the within-material (radius) and cross-material
+    # (material) holdout pipelines.
+    splits = sys.argv[1:] or ["radius_interval", "material"]
+
+    for split in splits:
+        HOLDOUT_MODE = split
+        print(f"\n=== split={HOLDOUT_MODE} ===")
+        run_model(LINEAR_REGRESSION, use_scan=True, ab_weight=1.0)
+        run_model(VANILLA, use_scan=True, ab_weight=1.0)
+        run_model(CNN, use_scan=False, ab_weight=1.0)

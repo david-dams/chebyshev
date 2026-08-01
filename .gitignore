@@ -2,3 +2,8 @@
 wannier
 *org
 *egg-info
+__pycache__/
+build/
+.pytest_cache/
+*~
+\#*\#

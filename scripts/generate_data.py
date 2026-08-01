@@ -10,7 +10,6 @@ from numpy.fft import fft
 from scipy.spatial import cKDTree
 import shapely
 
-from train import TRAINING_DATA
 from w90 import Wannier90ToKwant
 
 def _anchor(): # for emacs repl lol
@@ -19,16 +18,37 @@ def _anchor(): # for emacs repl lol
 BASE_DIR = Path(_anchor.__code__.co_filename).parent.parent
 COEFFICIENTS_PATH = BASE_DIR / "data" / "coefficients"
 W90_FILES_DIR = BASE_DIR / "data" / "wannier"
+TRAINING_DATA = BASE_DIR / "data" / "training.npz"
 
-R_MIN = 10
-R_MAX = 200
-R_STEPS = 500
+# ------------------------------------------------------------
+# run scope (kept small for a fast end-to-end verification run;
+# scale these up once the pipeline is confirmed working)
+# ------------------------------------------------------------
+MAX_MATERIALS = 60       # None => all valid materials
+
+R_MIN = 6
+R_MAX = 12
+R_STEPS = 3
 N_MIN = 3
-N_MAX = 40
+N_MAX = 3
 
 N_BOUNDARY_SAMPLES = 256
 N_FOURIER_MODES = 100
 N_ANGLE_BINS = 24
+
+# KPM
+N_MOMENTS = 100
+KPM_NUM_VECTORS = 10     # increase to reduce stochastic-trace noise in the targets
+
+# Skip materials whose Wannier Hamiltonian is too large: finite-system build
+# cost scales as num_wann**2 per R-vector, so high-orbital materials dominate
+# wall-clock. None => no cap.
+MAX_NUM_WANN = 40
+
+# intra-cell basis descriptor (per species-pair fractional-displacement hist)
+N_BASIS_U_BINS = 6
+N_BASIS_V_BINS = 6
+N_BASIS_Z_BINS = 6
 
 Z_ATOL = 1e-6
 BOUNDARY_GAP_THRESHOLD = np.pi
@@ -38,6 +58,19 @@ BOUNDARY_GAP_THRESHOLD = np.pi
 # ------------------------------------------------------------
 def is_valid_w90_path(w90_path):
     return w90_path.is_dir() and "JVASP" in w90_path.name and not "JVASP-27971" in w90_path.name and not "JVASP-6145" in w90_path.name # w90 broken / missing
+
+
+def get_material_paths():
+    """Sorted list of valid w90 material folders, capped by MAX_MATERIALS.
+
+    Shared by `collect_species_vocab` and `get_systems` so the species
+    vocabulary (and therefore feature dimensions) is scoped to exactly the
+    materials processed in this run.
+    """
+    paths = [p for p in sorted(W90_FILES_DIR.iterdir()) if is_valid_w90_path(p)]
+    if MAX_MATERIALS is not None:
+        paths = paths[:MAX_MATERIALS]
+    return paths
 
 def get_shape_fun(r, n):
     if n == np.inf:
@@ -355,7 +388,7 @@ def lattice_vector_features(prim_vec):
     cosang = np.clip(cosang, -1.0, 1.0)
     angle = np.arccos(cosang)
 
-    area = abs(np.cross(a1, a2))
+    area = abs(a1[0] * a2[1] - a1[1] * a2[0])
 
     return np.asarray([l1, l2, angle, area], dtype=float)
 
@@ -380,11 +413,152 @@ def thickness_features(atomic_system):
 
 
 # ------------------------------------------------------------
+# intra-cell basis (local) features
+# ------------------------------------------------------------
+
+def species_pairs(species_vocab):
+    """Unordered species pairs (including self-pairs) as index tuples."""
+    n = len(species_vocab)
+    return [(a, b) for a in range(n) for b in range(a, n)]
+
+
+def basis_feature_dim(species_vocab):
+    block = N_BASIS_U_BINS * N_BASIS_V_BINS + N_BASIS_Z_BINS
+    return len(species_pairs(species_vocab)) * block
+
+
+def basis_features(atom_list, prim_vec, species_vocab):
+    """Material-level descriptor of the atomic basis inside the unit cell.
+
+    For every unordered species pair we histogram the *relative* positions of
+    atom pairs expressed in the lattice (fractional) frame:
+
+    - a 2D histogram of the in-plane fractional displacement (du, dv), wrapped
+      to (-0.5, 0.5] and symmetrised (both +/- displacement are counted) so the
+      descriptor is origin- and atom-label-invariant,
+    - a 1D histogram of |dz| (out-of-plane, cartesian, normalised by the cell
+      thickness) since the out-of-plane direction is non-periodic.
+
+    Returns a fixed-length vector of size `basis_feature_dim(species_vocab)`.
+    """
+    species_to_idx = {s: i for i, s in enumerate(species_vocab)}
+    pairs = species_pairs(species_vocab)
+    pair_to_block = {p: k for k, p in enumerate(pairs)}
+    block_len = N_BASIS_U_BINS * N_BASIS_V_BINS + N_BASIS_Z_BINS
+
+    features = np.zeros(len(pairs) * block_len, dtype=float)
+
+    if len(atom_list) < 2:
+        return features
+
+    xy = np.array([a[1][:2] for a in atom_list], dtype=float)
+    z = np.array([a[1][2] for a in atom_list], dtype=float)
+    sidx = np.array([species_to_idx[str(a[0])] for a in atom_list], dtype=int)
+
+    A = np.asarray(prim_vec, dtype=float)[:2, :2]
+    frac = (np.linalg.pinv(A) @ xy.T).T  # (n_atoms, 2)
+
+    thickness = float(z.max() - z.min())
+    z_norm = thickness if thickness > 1e-12 else 1.0
+
+    u_edges = np.linspace(-0.5, 0.5, N_BASIS_U_BINS + 1)
+    v_edges = np.linspace(-0.5, 0.5, N_BASIS_V_BINS + 1)
+    z_edges = np.linspace(0.0, 1.0, N_BASIS_Z_BINS + 1)
+
+    n_atoms = len(atom_list)
+
+    # accumulate per-block histograms
+    duv_by_block = {k: [] for k in range(len(pairs))}
+    dz_by_block = {k: [] for k in range(len(pairs))}
+
+    for i in range(n_atoms):
+        for j in range(i + 1, n_atoms):
+            key = (min(sidx[i], sidx[j]), max(sidx[i], sidx[j]))
+            k = pair_to_block[key]
+
+            duv = frac[j] - frac[i]
+            duv = (duv + 0.5) % 1.0 - 0.5  # wrap to (-0.5, 0.5]
+            # symmetrise (label invariance): count both orientations
+            duv_by_block[k].append(duv)
+            duv_by_block[k].append(-duv)
+
+            dz = abs(z[j] - z[i]) / z_norm
+            dz_by_block[k].append(dz)
+            dz_by_block[k].append(dz)
+
+    for k in range(len(pairs)):
+        offset = k * block_len
+
+        if duv_by_block[k]:
+            duv = np.array(duv_by_block[k], dtype=float)
+            h2, _, _ = np.histogram2d(
+                duv[:, 0], duv[:, 1], bins=[u_edges, v_edges]
+            )
+            h2 = h2.ravel()
+            if h2.sum() > 0:
+                h2 = h2 / h2.sum()
+            features[offset : offset + N_BASIS_U_BINS * N_BASIS_V_BINS] = h2
+
+        if dz_by_block[k]:
+            dz = np.clip(np.array(dz_by_block[k], dtype=float), 0.0, 1.0)
+            hz, _ = np.histogram(dz, bins=z_edges)
+            hz = hz.astype(float)
+            if hz.sum() > 0:
+                hz = hz / hz.sum()
+            zoff = offset + N_BASIS_U_BINS * N_BASIS_V_BINS
+            features[zoff : zoff + N_BASIS_Z_BINS] = hz
+
+    return features
+
+
+# ------------------------------------------------------------
+# feature assembly (flatten per-layer + global features)
+# ------------------------------------------------------------
+
+def _pool_layers(arr):
+    """Mean-pool a (n_layers, d) per-layer feature block over layers."""
+    arr = np.asarray(arr, dtype=float)
+    if arr.ndim == 2 and arr.shape[0] > 0:
+        return arr.mean(axis=0)
+    return arr.ravel()
+
+
+def assemble_features(
+    fourier,
+    species_hist,
+    bond_angle_hist,
+    lattice_features,
+    thickness_features,
+    basis,
+):
+    """Concatenate per-sample features into one fixed-length flat vector.
+
+    Layout:
+        [ mean_layers(fourier), mean_layers(species_hist),
+          mean_layers(bond_angle_hist), lattice(4), thickness(3), basis(B) ]
+    """
+    return np.concatenate(
+        [
+            _pool_layers(fourier),
+            _pool_layers(species_hist),
+            _pool_layers(bond_angle_hist),
+            np.asarray(lattice_features, dtype=float).ravel(),
+            np.asarray(thickness_features, dtype=float).ravel(),
+            np.asarray(basis, dtype=float).ravel(),
+        ]
+    ).astype(np.float32)
+
+
+# ------------------------------------------------------------
 # KPM
 # ------------------------------------------------------------
 
 def get_moments_limits(fsyst):
-    spectrum = kwant.kpm.SpectralDensity(fsyst)
+    spectrum = kwant.kpm.SpectralDensity(
+        fsyst,
+        num_moments=N_MOMENTS,
+        num_vectors=KPM_NUM_VECTORS,
+    )
     moments = spectrum._moments()
     return moments, spectrum._a, spectrum._b
 
@@ -396,48 +570,40 @@ def get_moments_limits(fsyst):
 def collect_species_vocab():
     vocab = set()
 
-    for w90_path in W90_FILES_DIR.iterdir():
-        if not is_valid_w90_path(w90_path):
-            continue
-
+    for w90_path in get_material_paths():
         try:
             wout_path = w90_path / "wannier90.wout"
             text = wout_path.read_text()
             atom_list = Wannier90ToKwant._parse_atom_list(text)
-        except:
-            print(wout_path)
-
+        except Exception:
+            print(f"failed to parse species from {w90_path}")
+            continue
 
         for atom_type, _ in atom_list:
             vocab.add(str(atom_type))
-            
+
     return sorted(vocab)
 
 # ------------------------------------------------------------
 # system generation
 # ------------------------------------------------------------
-def plot_finite_spectrum(finalized_system, title):
-    H = finalized_system.hamiltonian_submatrix(sparse=False)
-    evals = la.eigvalsh(H)
-
-    plt.figure()
-    plt.plot(evals, ".")
-    plt.xlabel("state index")
-    plt.ylabel("Energy")
-    plt.title(title)
-    plt.show()
 
 def get_systems():
-    for w90_path in W90_FILES_DIR.iterdir():
-        if not is_valid_w90_path(w90_path):
+    for w90_path in get_material_paths():
+        try:
+            parsed = Wannier90ToKwant(
+                wout_path=w90_path / "wannier90.wout",
+                hr_path=w90_path / "wannier90_hr.dat",
+                n=2,
+                rel_cutoff=1e-3,
+            )
+        except Exception as e:
+            print(f"SKIP material {w90_path.name}: parse failed ({type(e).__name__}: {e})")
             continue
 
-        parsed = Wannier90ToKwant(
-            wout_path=w90_path / "wannier90.wout",
-            hr_path=w90_path / "wannier90_hr.dat",
-            n=2,
-            rel_cutoff=1e-3,
-        )
+        if MAX_NUM_WANN is not None and parsed.num_wann is not None and parsed.num_wann > MAX_NUM_WANN:
+            print(f"SKIP material {w90_path.name}: num_wann={parsed.num_wann} > {MAX_NUM_WANN}")
+            continue
 
         for r, n in get_grid():
             shape_fun = get_shape_fun(r, n)
@@ -446,13 +612,15 @@ def get_systems():
             # Tune if needed.
             larger_shape_fun = get_shape_fun(1.10 * r, n)
 
-            atomic_system, fsyst = parsed.to_kwant_systems(
-                shape_fun=shape_fun,
-                larger_shape_fun=larger_shape_fun,
-            )
-            
-            plot_finite_spectrum(fsyst, w90_path.stem)                
-            
+            try:
+                atomic_system, fsyst = parsed.to_kwant_systems(
+                    shape_fun=shape_fun,
+                    larger_shape_fun=larger_shape_fun,
+                )
+            except Exception as e:
+                print(f"SKIP {w90_path.name} r={r} n={n}: build failed ({type(e).__name__}: {e})")
+                continue
+
             fname = coefficients_file(r, n, w90_path.name)
 
             yield {
@@ -463,6 +631,7 @@ def get_systems():
                 "atomic_system": atomic_system,
                 "wannier_system": fsyst,
                 "prim_vec": parsed.prim_vec,
+                "atom_list": parsed.atom_list,
             }
 
 
@@ -481,34 +650,53 @@ def generate_data():
         fsyst = sample["wannier_system"]
         prim_vec = sample["prim_vec"]
 
-        z_fourier, fourier = boundary_fourier_by_layer(atomic_system)
+        try:
+            z_fourier, fourier = boundary_fourier_by_layer(atomic_system)
 
-        z_species, species_hist = boundary_species_histogram_by_layer(
-            atomic_system,
-            species_vocab=species_vocab,
-        )
+            z_species, species_hist = boundary_species_histogram_by_layer(
+                atomic_system,
+                species_vocab=species_vocab,
+            )
 
-        z_angles, bond_angle_hist = boundary_bond_angle_histogram_by_layer(
-            atomic_system,
-            prim_vec=prim_vec,
-        )
+            z_angles, bond_angle_hist = boundary_bond_angle_histogram_by_layer(
+                atomic_system,
+                prim_vec=prim_vec,
+            )
 
-        if not (
-            np.allclose(z_fourier, z_species, atol=Z_ATOL, rtol=0.0)
-            and np.allclose(z_fourier, z_angles, atol=Z_ATOL, rtol=0.0)
-        ):
-            raise ValueError(f"Layer mismatch for {fname}")
+            if not (
+                np.allclose(z_fourier, z_species, atol=Z_ATOL, rtol=0.0)
+                and np.allclose(z_fourier, z_angles, atol=Z_ATOL, rtol=0.0)
+            ):
+                raise ValueError(f"Layer mismatch for {fname}")
 
-        moments, a, b = get_moments_limits(fsyst)
+            lattice_feats = lattice_vector_features(prim_vec)
+            thickness_feats = thickness_features(atomic_system)
+            basis = basis_features(sample["atom_list"], prim_vec, species_vocab)
+
+            moments, a, b = get_moments_limits(fsyst)
+
+            features = assemble_features(
+                fourier,
+                species_hist,
+                bond_angle_hist,
+                lattice_feats,
+                thickness_feats,
+                basis,
+            )
+        except Exception as e:
+            print(f"SKIP {fname}: feature/KPM failed ({type(e).__name__}: {e})")
+            continue
 
         np.savez_compressed(
             fname,
+            features=features,
             fourier=fourier,
             species_hist=species_hist,
             bond_angle_hist=bond_angle_hist,
             z_values=z_fourier,
-            lattice_features=lattice_vector_features(prim_vec),
-            thickness_features=thickness_features(atomic_system),
+            lattice_features=lattice_feats,
+            thickness_features=thickness_feats,
+            basis_features=basis,
             moments=np.asarray(moments),
             a=a,
             b=b,
@@ -531,24 +719,36 @@ def extract_features():
     radii = []
     corners = []
 
+    features = []           # assembled flat feature vectors (fixed length)
+
     fourier = []
     species_hist = []
     bond_angle_hist = []
     z_values = []
     lattice_features = []
     thickness = []
+    basis = []
 
     moments = []
     lower_limits = []
     upper_limits = []
 
+    species_vocab = None
+
     for fname in sorted(COEFFICIENTS_PATH.glob("*.npz")):
         data = np.load(fname, allow_pickle=True)
+
+        # skip files from older pipeline generations that lack the new schema
+        if "features" not in data.files:
+            print(f"skipping incompatible coefficients file {fname.name}")
+            continue
 
         names.append(fname.name)
         models.append(str(data["model"]))
         radii.append(float(data["radius"]))
         corners.append(float(data["corners"]))
+
+        features.append(np.asarray(data["features"], dtype=np.float32))
 
         fourier.append(data["fourier"])
         species_hist.append(data["species_hist"])
@@ -556,10 +756,22 @@ def extract_features():
         z_values.append(data["z_values"])
         lattice_features.append(data["lattice_features"])
         thickness.append(data["thickness_features"])
+        basis.append(np.asarray(data["basis_features"], dtype=float))
 
-        moments.append(data["moments"])
+        moments.append(np.asarray(data["moments"]))
         lower_limits.append(float(data["a"]))
         upper_limits.append(float(data["b"]))
+
+        if species_vocab is None:
+            species_vocab = np.asarray(data["species_vocab"], dtype=object)
+
+    # assembled features and moments have fixed length => dense arrays that
+    # train.py can load with allow_pickle=False
+    features = np.stack(features, axis=0).astype(np.float32)
+
+    moment_lengths = {m.shape[-1] for m in moments}
+    assert len(moment_lengths) == 1, f"inconsistent moment lengths: {moment_lengths}"
+    moments = np.stack(moments, axis=0)
 
     np.savez_compressed(
         TRAINING_DATA,
@@ -568,19 +780,23 @@ def extract_features():
         radii=np.asarray(radii, dtype=float),
         corners=np.asarray(corners, dtype=float),
 
+        # flat, fixed-length features consumed by train.py
+        features=features,
+
+        # rich per-layer / per-cell features kept for future models
         # variable number of z-layers => object arrays
         fourier=np.asarray(fourier, dtype=object),
         species_hist=np.asarray(species_hist, dtype=object),
         bond_angle_hist=np.asarray(bond_angle_hist, dtype=object),
         z_values=np.asarray(z_values, dtype=object),
-
-        # fixed-size global features
         lattice_features=np.asarray(lattice_features, dtype=float),
         thickness_features=np.asarray(thickness, dtype=float),
+        basis_features=np.asarray(basis, dtype=float),
 
-        moments=np.asarray(moments, dtype=object),
+        moments=moments,
         lower_limits=np.asarray(lower_limits, dtype=float),
         upper_limits=np.asarray(upper_limits, dtype=float),
+        species_vocab=species_vocab,
     )
 
 
