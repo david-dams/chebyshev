@@ -1,8 +1,7 @@
 # ML of Chebyshev Coefficients for 2D Nanoflakes
 
 Predict Kernel Polynomial Method (KPM) Chebyshev coefficients directly
-from the geometry of Wannier90 2D nanoflakes, bypassing the costly
-spectral-density calculation. See [Weisse et al., Rev. Mod. Phys. 78,
+from the geometry of 2D nanoflakes. See [Weisse et al., Rev. Mod. Phys. 78,
 275 (2006)](http://dx.doi.org/10.1103/RevModPhys.78.275) for KPM background.
 
 ## Quick start
@@ -27,7 +26,7 @@ scripts/
   train.py           # train linear/MLP/CNN, two holdout splits
   plot_spectra.py    # reconstruct DOS from predicted coefficients
 tests/               # pytest: parsing, boundary, feature invariants
-data/                # gitignored: wannier/, coefficients/, training.npz
+data/                # gitignored: wannier/ (JARVIS data), coefficients/ (intermediate results), training.npz (features and targets for training)
 ```
 
 ## Holdout splits
