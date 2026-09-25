@@ -8,9 +8,8 @@ dependencies:
   - optax
   - pytest
   - numpy
+  - scipy
   - kwant
   - matplotlib
   - shapely
-  - pip
-  - pip:
-      - -e .
+  - requests

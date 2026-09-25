@@ -30,8 +30,10 @@ def extract_nested_zips(base_dir):
                 print(f"Extracted: {zip_path} -> {extract_dir}")
 
 def main():
-    url = ""
-    output_dir = "output"
+    url = ""  # JARVIS bulk-wannier download URL
+
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_dir = os.path.join(BASE_DIR, "data", "wannier")
 
     os.makedirs(output_dir, exist_ok=True)
 
